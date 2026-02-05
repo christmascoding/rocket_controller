@@ -1,0 +1,4 @@
+numpy>=1.26
+matplotlib>=3.8
+cvxpy>=1.4
+osqp>=0.6
