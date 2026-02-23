@@ -1,45 +1,46 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Button
+from matplotlib.widgets import Button, Slider
+from src.config import CONFIG
+
+
+def _rotation_matrix_from_pitch_yaw(pitch: float, yaw: float) -> np.ndarray:
+    """Create rotation matrix from pitch and yaw angles (same as simulator)"""
+    cp = np.cos(pitch)
+    sp = np.sin(pitch)
+    cy = np.cos(yaw)
+    sy = np.sin(yaw)
+    return np.array([
+        [cy * cp, -sy, cy * sp],
+        [sy * cp, cy, sy * sp],
+        [-sp, 0.0, cp],
+    ], dtype=float)
 
 
 def _rotation_matrix_from_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Compute rotation matrix from vector a to vector b"""
     a = a / max(np.linalg.norm(a), 1e-9)
     b = b / max(np.linalg.norm(b), 1e-9)
     v = np.cross(a, b)
     c = np.dot(a, b)
     if c < -0.999999:
-        # Opposite direction, rotate 180 degrees around any orthogonal axis
         axis = np.array([1.0, 0.0, 0.0])
         if abs(a[0]) > 0.9:
             axis = np.array([0.0, 1.0, 0.0])
         v = np.cross(a, axis)
         v = v / max(np.linalg.norm(v), 1e-9)
-        H = np.array(
-            [
-                [0.0, -v[2], v[1]],
-                [v[2], 0.0, -v[0]],
-                [-v[1], v[0], 0.0],
-            ]
-        )
         return -np.eye(3) + 2.0 * np.outer(v, v)
     s = np.linalg.norm(v)
     if s < 1e-9:
         return np.eye(3)
     v = v / s
-    vx = np.array(
-        [
-            [0.0, -v[2], v[1]],
-            [v[2], 0.0, -v[0]],
-            [-v[1], v[0], 0.0],
-        ]
-    )
-    R = np.eye(3) + vx * s + (vx @ vx) * (1.0 - c)
-    return R
+    vx = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    return np.eye(3) + vx * s + (vx @ vx) * (1.0 - c)
 
 
-def _make_cylinder(radius: float, z0: float, z1: float, n: int = 12):
+def _make_cylinder(radius: float, z0: float, z1: float, n: int = 8):
+    """Create cylinder mesh"""
     theta = np.linspace(0, 2 * np.pi, n)
     z = np.linspace(z0, z1, 2)
     theta_grid, z_grid = np.meshgrid(theta, z)
@@ -48,7 +49,8 @@ def _make_cylinder(radius: float, z0: float, z1: float, n: int = 12):
     return x, y, z_grid
 
 
-def _make_cone(radius: float, z0: float, z1: float, n: int = 12):
+def _make_cone(radius: float, z0: float, z1: float, n: int = 8):
+    """Create cone mesh"""
     theta = np.linspace(0, 2 * np.pi, n)
     z = np.linspace(z0, z1, 2)
     r = np.linspace(radius, 0.0, 2)
@@ -60,242 +62,402 @@ def _make_cone(radius: float, z0: float, z1: float, n: int = 12):
     return x, y, z_grid
 
 
-def _direction_from_pitch_yaw(pitch: float, yaw: float) -> np.ndarray:
-    cp = np.cos(pitch)
-    sp = np.sin(pitch)
-    cy = np.cos(yaw)
-    sy = np.sin(yaw)
-    return np.array([cy * sp, sy * sp, cp], dtype=float)
-
-
-def _set_equal_axes(ax, ref_pos: np.ndarray, margin_ratio: float = 0.2):
-    finite = np.isfinite(ref_pos).all(axis=1)
-    ref = ref_pos[finite]
-    if ref.size == 0:
-        return
-    min_vals = ref.min(axis=0)
-    max_vals = ref.max(axis=0)
-    center = (min_vals + max_vals) / 2.0
-    half_range = (max_vals - min_vals).max() / 2.0
-    margin = max(1.0, half_range * margin_ratio)
-    max_range = half_range + margin
-    ax.set_xlim(center[0] - max_range, center[0] + max_range)
-    ax.set_ylim(center[1] - max_range, center[1] + max_range)
-    ax.set_zlim(center[2] - max_range, center[2] + max_range)
-    ax.set_box_aspect((1.0, 1.0, 1.0))
-
-
 def animate_trajectory(history: dict, trail_length: int = 500):
-    pos = history["position"]
-    pos_ref = history["pos_ref"]
-    pos_closest = history["pos_closest"]
-    gimbal = history["gimbal_angles"]
-    thrust = history["thrust_n"]
-    velocity = history["velocity"]
-    time = history["time"]
-
-    fig = plt.figure(figsize=(12, 8))
-    gs = fig.add_gridspec(3, 2, width_ratios=[2.2, 1.0], height_ratios=[1.0, 1.0, 1.0])
-    ax = fig.add_subplot(gs[:, 0], projection="3d")
-    ax_thrust = fig.add_subplot(gs[0, 1])
-    ax_gimbal = fig.add_subplot(gs[1, 1])
-    ax_error = fig.add_subplot(gs[2, 1])
-
-    ax.plot(pos_ref[:, 0], pos_ref[:, 1], pos_ref[:, 2], "--", color="gray", label="Target")
-
-    actual_line, = ax.plot([], [], [], color="tab:blue", label="Actual")
-    point, = ax.plot([], [], [], "o", color="tab:red", markersize=6)
-    ref_point, = ax.plot([], [], [], "o", color="tab:purple", markersize=6, label="Closest")
-    gimbal_vec = ax.quiver([], [], [], [], [], [], length=5.0, color="tab:green")
-    body_surface = None
-    cone_surface = None
-    stick_line, = ax.plot([], [], [], color="tab:orange", linewidth=3)
-
-    ax.set_xlabel("X (m)")
-    ax.set_ylabel("Y (m)")
-    ax.set_zlabel("Z (m)")
-    ax.legend()
-    ax.set_title("Rocket Trajectory and Gimbal Direction")
-
-    # Thrust plot
-    ax_thrust.plot(time, thrust, color="tab:orange")
-    thrust_marker = ax_thrust.axvline(time[0], color="black", linestyle="--")
-    ax_thrust.set_title("Thrust (N)")
-    ax_thrust.set_xlabel("Time (s)")
-    ax_thrust.set_ylabel("Thrust")
-    ax_thrust.grid(True, alpha=0.3)
-
-    # Gimbal plot
-    ax_gimbal.plot(time, np.rad2deg(gimbal[:, 0]), label="Pitch", color="tab:blue")
-    ax_gimbal.plot(time, np.rad2deg(gimbal[:, 1]), label="Yaw", color="tab:green")
-    gimbal_marker = ax_gimbal.axvline(time[0], color="black", linestyle="--")
-    ax_gimbal.set_title("Gimbal Angles (deg)")
-    ax_gimbal.set_xlabel("Time (s)")
-    ax_gimbal.set_ylabel("Angle")
-    ax_gimbal.grid(True, alpha=0.3)
-    ax_gimbal.legend()
-
-    # Position error plot (closest point on path)
-    pos_error = np.linalg.norm(pos - pos_closest, axis=1)
-    ax_error.plot(time, pos_error, color="tab:red")
-    error_marker = ax_error.axvline(time[0], color="black", linestyle="--")
-    ax_error.set_title("Position Deviation (m)")
-    ax_error.set_xlabel("Time (s)")
-    ax_error.set_ylabel("Error")
+    """
+    Simple, robust 3-panel trajectory visualization:
+    - Left: Rocket close-up view (attitude/thrust)
+    - Center: Main 3D trajectory (simple lines, no meshes)
+    - Right: MPC diagnostics
+    """
+    # Extract history and convert to numpy arrays
+    pos = np.array(history["position"])
+    pos_ref = np.array(history["pos_ref"])
+    pos_closest = np.array(history["pos_closest"])
+    gimbal = np.array(history["gimbal_angles"])
+    thrust = np.array(history["thrust_n"])
+    attitude = np.array(history["attitude"])
+    velocity = np.array(history["velocity"])
+    time = np.array(history["time"])
+    
+    # MPC - handle both list and array formats
+    mpc_pred_pos = history.get("mpc_pred_pos", [])
+    mpc_ref_pos = history.get("mpc_ref_pos", [])
+    mpc_cost_pos = np.array(history.get("mpc_cost_pos", [0.0] * len(time)))
+    mpc_cost_vel = np.array(history.get("mpc_cost_vel", [0.0] * len(time)))
+    mpc_cost_accel = np.array(history.get("mpc_cost_accel", [0.0] * len(time)))
+    mpc_cost_jerk = np.array(history.get("mpc_cost_jerk", [0.0] * len(time)))
+    
+    max_thrust = thrust.max() if thrust.max() > 1e-6 else 1.0
+    
+    # Performance settings
+    update_interval = CONFIG.viz.update_interval
+    num_frames = max(1, len(pos) // update_interval)
+    
+    # Create figure
+    fig = plt.figure(figsize=(22, 10))
+    gs = fig.add_gridspec(2, 4, width_ratios=[1.6, 1.2, 0.9, 0.9], 
+                          height_ratios=[1.0, 1.0], hspace=0.3, wspace=0.5)
+    
+    # ===== LEFT: CLOSEUP VIEW =====
+    ax_closeup = fig.add_subplot(gs[:, 0], projection="3d")
+    ax_closeup.set_title("Rocket Attitude", fontsize=12, fontweight='bold')
+    ax_closeup.set_xlabel("X [m]")
+    ax_closeup.set_ylabel("Y [m]")
+    ax_closeup.set_zlabel("Z [m]")
+    ax_closeup.set_xlim(-10, 10)
+    ax_closeup.set_ylim(-10, 10)
+    ax_closeup.set_zlim(0, 15)
+    ax_closeup.view_init(elev=30, azim=45)
+    ax_closeup.set_box_aspect((1, 1, 1.5))
+    ax_closeup.disable_mouse_rotation()
+    ax_closeup.format_coord = lambda x, y: ""
+    ax_closeup.grid(True, alpha=0.3)
+    
+    # Coordinate frame
+    ax_closeup.quiver(0, 0, 0, 2, 0, 0, color='r', linewidth=1.5, arrow_length_ratio=0.2)
+    ax_closeup.quiver(0, 0, 0, 0, 2, 0, color='g', linewidth=1.5, arrow_length_ratio=0.2)
+    ax_closeup.quiver(0, 0, 0, 0, 0, 2, color='b', linewidth=1.5, arrow_length_ratio=0.2)
+    
+    closeup_body = None
+    closeup_cone = None
+    closeup_thrust, = ax_closeup.plot([], [], [], linewidth=5, color='orange')
+    closeup_text = ax_closeup.text2D(0.02, 0.98, "", transform=ax_closeup.transAxes,
+                                      fontsize=9, verticalalignment='top', family='monospace',
+                                      bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # ===== CENTER: MAIN TRAJECTORY =====
+    ax_main = fig.add_subplot(gs[:, 1], projection="3d")
+    ax_main.set_title("Rocket Trajectory", fontsize=12, fontweight='bold')
+    ax_main.set_xlabel("X [m]")
+    ax_main.set_ylabel("Y [m]")
+    ax_main.set_zlabel("Z [m]")
+    ax_main.view_init(elev=30, azim=45)
+    ax_main.format_coord = lambda x, y: ""
+    ax_main.grid(True, alpha=0.3)
+    
+    # Plot reference path ONCE (static)
+    ax_main.plot(pos_ref[:, 0], pos_ref[:, 1], pos_ref[:, 2], 'g--', 
+                 alpha=0.6, linewidth=2, label='Target Path')
+    
+    # Dynamic elements (updated each frame)
+    trail_line, = ax_main.plot([], [], [], 'orange', linewidth=2.5, label='Actual Path')
+    pos_dot, = ax_main.plot([], [], [], 'ro', markersize=8, label='Current Pos')
+    target_dot, = ax_main.plot([], [], [], 'bo', markersize=6, label='MPC Target (k=0)')
+    closest_dot, = ax_main.plot([], [], [], 'mo', markersize=5, label='Closest Point')
+    
+    ax_main.legend(loc='upper right', fontsize=9)
+    
+    # Set axis limits to show entire trajectory (both ref and actual)
+    all_pos = np.vstack([pos_ref, pos])
+    mins = all_pos.min(axis=0)
+    maxs = all_pos.max(axis=0)
+    ranges = maxs - mins
+    margins = ranges * 0.2 + 1.0
+    ax_main.set_xlim(mins[0] - margins[0], maxs[0] + margins[0])
+    ax_main.set_ylim(mins[1] - margins[1], maxs[1] + margins[1])
+    ax_main.set_zlim(mins[2] - margins[2], maxs[2] + margins[2])
+    
+    # ===== RIGHT: MPC INTERNALS =====
+    
+    # Top-left: Position Error
+    ax_error = fig.add_subplot(gs[0, 2])
+    ax_error.set_title("Position Error", fontsize=10, fontweight='bold')
+    ax_error.set_xlabel("Time [s]")
+    ax_error.set_ylabel("Error [m]")
     ax_error.grid(True, alpha=0.3)
-
-    _set_equal_axes(ax, pos_ref, margin_ratio=0.2)
-
-    speed_factor = 1
-
-    # Speed control buttons
-    ax_btn_1x = fig.add_axes([0.78, 0.92, 0.035, 0.05])
-    ax_btn_2x = fig.add_axes([0.82, 0.92, 0.035, 0.05])
-    ax_btn_4x = fig.add_axes([0.86, 0.92, 0.035, 0.05])
-    ax_btn_8x = fig.add_axes([0.90, 0.92, 0.035, 0.05])
-    ax_btn_16x = fig.add_axes([0.94, 0.92, 0.035, 0.05])
-    ax_btn_32x = fig.add_axes([0.98, 0.92, 0.035, 0.05])
-    btn_1x = Button(ax_btn_1x, "1x")
-    btn_2x = Button(ax_btn_2x, "2x")
-    btn_4x = Button(ax_btn_4x, "4x")
-    btn_8x = Button(ax_btn_8x, "8x")
-    btn_16x = Button(ax_btn_16x, "16x")
-    btn_32x = Button(ax_btn_32x, "32x")
-
-    def _set_speed(val: int):
-        nonlocal speed_factor
-        speed_factor = val
-
-    btn_1x.on_clicked(lambda _event: _set_speed(1))
-    btn_2x.on_clicked(lambda _event: _set_speed(2))
-    btn_4x.on_clicked(lambda _event: _set_speed(4))
-    btn_8x.on_clicked(lambda _event: _set_speed(8))
-    btn_16x.on_clicked(lambda _event: _set_speed(16))
-    btn_32x.on_clicked(lambda _event: _set_speed(32))
-
-    def update(frame: int):
-        frame = min(frame * speed_factor, len(pos) - 1)
-        start = max(0, frame - trail_length)
-        segment = pos[start:frame]
-        if len(segment) > 0:
-            actual_line.set_data(segment[:, 0], segment[:, 1])
-            actual_line.set_3d_properties(segment[:, 2])
-
-        point.set_data([pos[frame, 0]], [pos[frame, 1]])
-        point.set_3d_properties([pos[frame, 2]])
-
-        ref_point.set_data([pos_closest[frame, 0]], [pos_closest[frame, 1]])
-        ref_point.set_3d_properties([pos_closest[frame, 2]])
-
-        # Update gimbal vector (thrust direction)
-        pitch, yaw = gimbal[frame]
-        body_pitch = history["attitude"][frame, 1]
-        body_yaw = history["attitude"][frame, 2]
-        thrust_dir = _direction_from_pitch_yaw(pitch, yaw)
-        # Rotate gimbal direction by body attitude
-        cp = np.cos(body_pitch)
-        sp = np.sin(body_pitch)
-        cy = np.cos(body_yaw)
-        sy = np.sin(body_yaw)
-        R_body = np.array(
-            [
-                [cy * cp, -sy, cy * sp],
-                [sy * cp, cy, sy * sp],
-                [-sp, 0.0, cp],
-            ]
-        )
-        thrust_dir = R_body @ thrust_dir
-
-        nonlocal gimbal_vec
-        gimbal_vec.remove()
-        gimbal_vec = ax.quiver(
-            pos[frame, 0],
-            pos[frame, 1],
-            pos[frame, 2],
-            thrust_dir[0],
-            thrust_dir[1],
-            thrust_dir[2],
-            length=5.0,
-            color="tab:green",
-        )
-        # Draw rocket body (cylinder + cone) aligned with velocity direction
-        nonlocal body_surface, cone_surface
-        if body_surface is not None:
-            body_surface.remove()
-        if cone_surface is not None:
-            cone_surface.remove()
-
-        body_length = 4.0
-        body_radius = 0.4
-        cone_length = 1.0
-        stick_max_len = 2.5
-
-        center = pos[frame]
-        z0 = -body_length / 2.0
-        z1 = body_length / 2.0
-        cone_z0 = z1
-        cone_z1 = z1 + cone_length
-
-        x_cyl, y_cyl, z_cyl = _make_cylinder(body_radius, z0, z1, n=16)
-        x_cone, y_cone, z_cone = _make_cone(body_radius, cone_z0, cone_z1, n=16)
-
-        body_dir = R_body @ np.array([0.0, 0.0, 1.0])
-        if np.linalg.norm(body_dir) < 1e-6:
-            body_dir = np.array([0.0, 0.0, 1.0])
-        # Rotate local +Z to body direction
-        R = _rotation_matrix_from_vectors(np.array([0.0, 0.0, 1.0]), body_dir)
-
-        def transform(x, y, z):
+    # Ensure pos_error matches position array length
+    pos_error = np.linalg.norm(pos[:len(pos_closest)] - pos_closest[:len(pos)], axis=1)
+    error_line, = ax_error.plot([], [], 'r-', linewidth=1.5)
+    error_marker = ax_error.axvline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+    
+    # Top-right: MPC Horizon
+    ax_horizon = fig.add_subplot(gs[0, 3])
+    ax_horizon.set_title("MPC Horizon (XY)", fontsize=10, fontweight='bold')
+    ax_horizon.set_xlabel("X [m]")
+    ax_horizon.set_ylabel("Y [m]")
+    ax_horizon.grid(True, alpha=0.3)
+    ax_horizon.set_aspect('equal')
+    horizon_line, = ax_horizon.plot([], [], 'b-', linewidth=1, alpha=0.7)
+    horizon_curr, = ax_horizon.plot([], [], 'ro', markersize=6)
+    
+    # Bottom-left: Costs
+    ax_costs = fig.add_subplot(gs[1, 2])
+    ax_costs.set_title("MPC Costs", fontsize=10, fontweight='bold')
+    ax_costs.set_xlabel("Time [s]")
+    ax_costs.set_ylabel("Cost")
+    ax_costs.grid(True, alpha=0.3)
+    cost_pos, = ax_costs.plot([], [], label='Pos', linewidth=1)
+    cost_vel, = ax_costs.plot([], [], label='Vel', linewidth=1)
+    cost_accel, = ax_costs.plot([], [], label='Accel', linewidth=1)
+    ax_costs.legend(fontsize=8, loc='upper right')
+    
+    # Bottom-right: Reserved
+    ax_info = fig.add_subplot(gs[1, 3])
+    ax_info.axis('off')
+    info_text = ax_info.text(0.05, 0.95, "", transform=ax_info.transAxes,
+                            fontsize=9, verticalalignment='top', family='monospace',
+                            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+    
+    # ===== TIMELINE SEEKBAR =====
+    ax_timeline = fig.add_axes([0.1, 0.975, 0.55, 0.015])
+    slider = Slider(ax_timeline, 'Frame', 0, num_frames - 1, valinit=0, valstep=1, color='steelblue')
+    
+    # ===== PLAYBACK CONTROLS =====
+    play_state = {'is_playing': True, 'current_frame': 0, 'user_seeking': False, 'last_slider_val': 0}
+    
+    def on_slider_change(val):
+        """User moved slider - only trigger if value actually changed"""
+        if int(val) != play_state['last_slider_val']:
+            play_state['user_seeking'] = True
+            play_state['current_frame'] = int(val)
+            play_state['last_slider_val'] = int(val)
+            fig.canvas.draw_idle()
+    
+    slider.on_changed(on_slider_change)
+    
+    # Play/Pause button
+    ax_play = fig.add_axes([0.65, 0.96, 0.04, 0.03])
+    btn_play = Button(ax_play, 'Play/Pause', color='lightblue', hovercolor='skyblue')
+    
+    def on_play_click(_event):
+        """Toggle playback"""
+        play_state['is_playing'] = not play_state['is_playing']
+        if play_state['is_playing']:
+            anim.resume()
+        else:
+            anim.pause()
+    
+    btn_play.on_clicked(on_play_click)
+    
+    # Speed buttons
+    speeds = [1, 2, 4, 8, 16, 32]
+    for i, speed in enumerate(speeds):
+        ax_btn = fig.add_axes([0.695 + i * 0.035, 0.96, 0.03, 0.03])
+        btn = Button(ax_btn, f'{speed}x', color='lightgray', hovercolor='gray')
+        
+        def make_speed_callback(s):
+            def callback(_event):
+                anim.event_source.interval = max(1, int(30 / s))
+            return callback
+        
+        btn.on_clicked(make_speed_callback(speed))
+    
+    # ===== VIEW SYNCHRONIZATION =====
+    view_sync = {'last_elev': 30, 'last_azim': 45}
+    
+    def on_motion(event):
+        """Sync closeup view when user rotates main trajectory view"""
+        if event.inaxes != ax_main:
+            return
+        try:
+            # Try to read current view angles from ax_main
+            elev = getattr(ax_main, 'elev', None)
+            azim = getattr(ax_main, 'azim', None)
+            if elev is not None and azim is not None:
+                # If angles changed, apply to closeup
+                if abs(elev - view_sync['last_elev']) > 0.1 or abs(azim - view_sync['last_azim']) > 0.1:
+                    ax_closeup.view_init(elev=elev, azim=azim)
+                    view_sync['last_elev'] = elev
+                    view_sync['last_azim'] = azim
+                    fig.canvas.draw_idle()
+        except:
+            pass
+    
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    
+    # ===== ANIMATION UPDATE FUNCTION =====
+    def update(frame_idx: int):
+        nonlocal closeup_body, closeup_cone
+        
+        # If user is seeking via slider, use their choice and pause
+        if play_state['user_seeking']:
+            current_frame = play_state['current_frame']
+            play_state['is_playing'] = False
+            play_state['user_seeking'] = False
+        # Otherwise, advance frame if playing
+        elif play_state['is_playing']:
+            play_state['current_frame'] = min(frame_idx, num_frames - 1)
+            current_frame = play_state['current_frame']
+        else:
+            # Paused: stay at current frame
+            current_frame = play_state['current_frame']
+        
+        actual_idx = min(current_frame * update_interval, len(pos) - 1)
+        
+        # Current state
+        p = pos[actual_idx]
+        g = gimbal[actual_idx]
+        t = thrust[actual_idx]
+        att = attitude[actual_idx]
+        t_now = time[actual_idx]
+        
+        # Body attitude from actual simulation state (not velocity-aligned)
+        R_body = _rotation_matrix_from_pitch_yaw(att[1], att[2])
+        
+        # Gimbal direction using same formula as simulator
+        # direction_from_angles returns [cos(yaw)*sin(pitch), sin(yaw)*sin(pitch), cos(pitch)]
+        # But gimbal points BACKWARD (negative Z), so negate Z component
+        # Also negate yaw since gimbal command has inverted yaw for torque control
+        pitch, yaw = g[0], -g[1]
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        gimbal_dir_body = np.array([cy * sp, sy * sp, -cp])  # Negative cp for backward direction
+        gimbal_dir_world = R_body @ gimbal_dir_body
+        
+        # ===== UPDATE CLOSEUP VIEW =====
+        
+        # Remove old meshes
+        if closeup_body is not None:
+            try:
+                closeup_body.remove()
+            except:
+                pass
+        if closeup_cone is not None:
+            try:
+                closeup_cone.remove()
+            except:
+                pass
+        
+        # Create rocket meshes (low quality for performance)
+        body_rad = 0.8
+        cone_rad = 0.8
+        body_len = 6.0
+        cone_len = 1.0
+        center_offset = 3.5
+        
+        z0, z1 = -center_offset, center_offset - 1.0
+        zc0, zc1 = z1, z1 + cone_len
+        
+        x_cyl, y_cyl, z_cyl = _make_cylinder(body_rad, z0, z1, n=6)
+        x_cone, y_cone, z_cone = _make_cone(cone_rad, zc0, zc1, n=6)
+        
+        # Rotate and plot
+        def rotate_mesh(x, y, z, R):
             pts = np.stack([x, y, z], axis=-1)
             shp = pts.shape
-            pts = pts.reshape(-1, 3) @ R.T
-            pts = pts.reshape(shp)
-            return pts[..., 0] + center[0], pts[..., 1] + center[1], pts[..., 2] + center[2]
+            pts_rot = (pts.reshape(-1, 3) @ R.T).reshape(shp)
+            return pts_rot[..., 0], pts_rot[..., 1], pts_rot[..., 2]
+        
+        x_cyl_r, y_cyl_r, z_cyl_r = rotate_mesh(x_cyl, y_cyl, z_cyl, R_body)
+        x_cone_r, y_cone_r, z_cone_r = rotate_mesh(x_cone, y_cone, z_cone, R_body)
+        
+        closeup_body = ax_closeup.plot_surface(x_cyl_r, y_cyl_r, z_cyl_r,
+                                               color='lightsteelblue', alpha=0.9, linewidth=0)
+        closeup_cone = ax_closeup.plot_surface(x_cone_r, y_cone_r, z_cone_r,
+                                              color='silver', alpha=0.9, linewidth=0)
+        
+        # Thrust vector
+        thrust_pct = t / max_thrust
+        thrust_color = '#FF4500' if thrust_pct > 0.8 else '#FFA500' if thrust_pct > 0.4 else '#FFD700'
+        nozzle_pos = np.array([0, 0, -center_offset])
+        nozzle_world = R_body @ nozzle_pos
+        thrust_tip = nozzle_world + gimbal_dir_world * 8.0 * thrust_pct
+        closeup_thrust.set_data([nozzle_world[0], thrust_tip[0]], 
+                               [nozzle_world[1], thrust_tip[1]])
+        closeup_thrust.set_3d_properties([nozzle_world[2], thrust_tip[2]])
+        closeup_thrust.set_color(thrust_color)
+        
+        info_str = f"Pos: ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})\nAtt: ({att[0]:.2f}, {att[1]:.2f})\nThrust: {thrust_pct:.1%}"
+        closeup_text.set_text(info_str)
+        
+        # ===== UPDATE MAIN VIEW =====
+        
+        # Trail (actual trajectory so far)
+        start_idx = max(0, actual_idx - trail_length)
+        trail_data = pos[start_idx:actual_idx+1]
+        if len(trail_data) > 0:
+            trail_line.set_data(trail_data[:, 0], trail_data[:, 1])
+            trail_line.set_3d_properties(trail_data[:, 2])
+        
+        # Current position
+        pos_dot.set_data([p[0]], [p[1]])
+        pos_dot.set_3d_properties([p[2]])
 
-        x_cyl_w, y_cyl_w, z_cyl_w = transform(x_cyl, y_cyl, z_cyl)
-        x_cone_w, y_cone_w, z_cone_w = transform(x_cone, y_cone, z_cone)
+        # MPC target (k=0 in reference horizon)
+        try:
+            if isinstance(mpc_ref_pos, list) and len(mpc_ref_pos) > actual_idx:
+                ref_seq = mpc_ref_pos[actual_idx]
+                if hasattr(ref_seq, '__len__') and len(ref_seq) > 0:
+                    target = ref_seq[0] if hasattr(ref_seq[0], '__len__') else ref_seq
+                    target_dot.set_data([target[0]], [target[1]])
+                    target_dot.set_3d_properties([target[2]])
+            elif hasattr(mpc_ref_pos, 'shape') and mpc_ref_pos.shape[0] > actual_idx:
+                ref_seq = mpc_ref_pos[actual_idx]
+                if ref_seq.size > 0:
+                    if ref_seq.shape[0] == 3:
+                        target = ref_seq[:, 0]
+                    else:
+                        target = ref_seq[0]
+                    target_dot.set_data([target[0]], [target[1]])
+                    target_dot.set_3d_properties([target[2]])
+        except (IndexError, ValueError, TypeError):
+            pass
 
-        body_surface = ax.plot_surface(
-            x_cyl_w,
-            y_cyl_w,
-            z_cyl_w,
-            color="lightsteelblue",
-            alpha=0.9,
-            linewidth=0,
-        )
-        cone_surface = ax.plot_surface(
-            x_cone_w,
-            y_cone_w,
-            z_cone_w,
-            color="silver",
-            alpha=0.9,
-            linewidth=0,
-        )
-
-        # Engine stick showing thrust magnitude (aligned with thrust direction)
-        stick_len = stick_max_len * (thrust[frame] / max(thrust.max(), 1e-9))
-        stick_base = center + R @ np.array([0.0, 0.0, z0])
-        stick_tip = stick_base + thrust_dir * (-stick_len)
-        stick_line.set_data([stick_base[0], stick_tip[0]], [stick_base[1], stick_tip[1]])
-        stick_line.set_3d_properties([stick_base[2], stick_tip[2]])
-
-        thrust_marker.set_xdata([time[frame], time[frame]])
-        gimbal_marker.set_xdata([time[frame], time[frame]])
-        error_marker.set_xdata([time[frame], time[frame]])
-
-        return (
-            actual_line,
-            point,
-            ref_point,
-            gimbal_vec,
-            body_surface,
-            cone_surface,
-            stick_line,
-            thrust_marker,
-            gimbal_marker,
-            error_marker,
-        )
-
-    anim = FuncAnimation(fig, update, frames=len(pos), interval=30, blit=False)
+        # Closest point on path (projection)
+        try:
+            if len(pos_closest) > actual_idx:
+                pc = pos_closest[actual_idx]
+                closest_dot.set_data([pc[0]], [pc[1]])
+                closest_dot.set_3d_properties([pc[2]])
+        except (IndexError, ValueError, TypeError):
+            pass
+        
+        # ===== UPDATE RIGHT PANEL =====
+        
+        # Error plot
+        window = 200
+        start_w = max(0, actual_idx - window)
+        end_w = actual_idx + 1
+        error_line.set_data(time[start_w:end_w], pos_error[start_w:end_w])
+        ax_error.set_xlim(time[max(0, actual_idx - window)], time[min(len(time)-1, actual_idx + 100)])
+        ax_error.set_ylim(0, max(pos_error[start_w:end_w].max() * 1.1, 0.5))
+        error_marker.set_xdata([t_now, t_now])
+        
+        # MPC Horizon
+        try:
+            if isinstance(mpc_pred_pos, list) and len(mpc_pred_pos) > actual_idx:
+                pred = mpc_pred_pos[actual_idx]
+                if hasattr(pred, '__len__') and len(pred) > 0:
+                    horizon_line.set_data(pred[:, 0], pred[:, 1])
+                    horizon_curr.set_data([p[0]], [p[1]])
+                    ax_horizon.relim()
+                    ax_horizon.autoscale_view()
+            elif hasattr(mpc_pred_pos, 'shape') and mpc_pred_pos.shape[0] > actual_idx:
+                pred = mpc_pred_pos[actual_idx]
+                if len(pred) > 0:
+                    horizon_line.set_data(pred[:, 0], pred[:, 1])
+                    horizon_curr.set_data([p[0]], [p[1]])
+                    ax_horizon.relim()
+                    ax_horizon.autoscale_view()
+        except (IndexError, ValueError, TypeError):
+            pass
+        
+        # Costs
+        start_w = max(0, actual_idx - 300)
+        cost_pos.set_data(time[start_w:end_w], mpc_cost_pos[start_w:end_w])
+        cost_vel.set_data(time[start_w:end_w], mpc_cost_vel[start_w:end_w])
+        cost_accel.set_data(time[start_w:end_w], mpc_cost_accel[start_w:end_w])
+        ax_costs.relim()
+        ax_costs.autoscale_view()
+        
+        info_text.set_text(f"Frame: {current_frame}/{num_frames}\nTime: {t_now:.2f}s")
+        
+        # Update slider position ONLY during automatic playback (not during user seeking)
+        # This prevents the slider from jumping back when user tries to seek
+        if not play_state['user_seeking'] and play_state['is_playing']:
+            play_state['last_slider_val'] = current_frame
+            slider.set_val(current_frame)
+        
+        return (trail_line, pos_dot, target_dot, closest_dot, closeup_thrust, closeup_body, closeup_cone,
+                error_line, error_marker, horizon_line, horizon_curr,
+                cost_pos, cost_vel, cost_accel, closeup_text, info_text)
+    
+    # Create animation
+    anim = FuncAnimation(fig, update, frames=num_frames, interval=30, blit=False, repeat=False)
+    
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="This figure includes Axes that are not compatible with tight_layout")
+        plt.tight_layout()
+    
     plt.show()
-    return anim
