@@ -73,20 +73,28 @@ class Plotter:
         self.ax_global.set_ylim(-5_000, 5_000)
         self.ax_global.set_zlim(0, config.TRAJ_Z_REF * 1.1)
 
-    def update(self, sim_state, control, target_pos, frame_idx=None, phase="phase1"):
+    def update(self, sim_state, control, target_pos, frame_idx=None, phase="phase1", landed=False):
         pos = sim_state[0:3]
         vel = sim_state[3:6]
         phi, theta, psi = sim_state[6:9]
 
-        # Update telemetry text
+        # Update telemetry text with gimbal and aileron data
         throttle_pct = control["throttle"] * 100
         gimbal_y_deg = np.rad2deg(control["gimbal_y"])
         gimbal_z_deg = np.rad2deg(control["gimbal_z"])
+        
+        # Aileron/Grid fin data
+        aero_torque = control.get("aero_torque", np.zeros(3))
+        grid_fins = control.get("grid_fins", 0.0)
+        aero_torque_mag = np.linalg.norm(aero_torque)
+        
+        # Build telemetry string
         telemetry_str = (
             f"PHASE: {phase.upper()}\n"
             f"Pos: [{pos[0]:7.1f}, {pos[1]:7.1f}, {pos[2]:7.1f}] m\n"
             f"Vel: [{vel[0]:6.1f}, {vel[1]:6.1f}, {vel[2]:6.1f}] m/s\n"
-            f"Thrust: {throttle_pct:5.1f}%  Gimbal: [{gimbal_y_deg:5.1f}, {gimbal_z_deg:5.1f}] deg"
+            f"Gimbal: [{gimbal_y_deg:6.1f}, {gimbal_z_deg:6.1f}] deg  Thrust: {throttle_pct:5.1f}%\n"
+            f"Ailerons: τ={aero_torque_mag:7.0f} N⋅m  Grid Fins: {grid_fins*100:5.1f}%"
         )
         self.telemetry_text.set_text(telemetry_str)
 
@@ -118,7 +126,7 @@ class Plotter:
             # Thrust vector in global view
             delta_y = control["gimbal_y"]
             delta_z = control["gimbal_z"]
-            exhaust_dir_body = np.array([-delta_y, -delta_z, -1.0])
+            exhaust_dir_body = np.array([delta_y, delta_z, -1.0])
             exhaust_dir_body /= np.linalg.norm(exhaust_dir_body) + 1e-9
             exhaust_dir_world = dcm @ exhaust_dir_body
             exhaust_len = 4.0 + 8.0 * control["throttle"]
@@ -141,7 +149,7 @@ class Plotter:
             self.global_exhaust_line.set_data([], [])
             self.global_exhaust_line.set_3d_properties([])
 
-        if phase in ("phase1a", "phase1b"):
+        if phase in ("phase1a", "phase1b", "phase1c"):
             self.target_dot.set_data([target_pos[0]], [target_pos[1]])
             self.target_dot.set_3d_properties([target_pos[2]])
         else:
@@ -162,7 +170,7 @@ class Plotter:
         throttle = control["throttle"]
         delta_y = control["gimbal_y"]
         delta_z = control["gimbal_z"]
-        exhaust_dir_body = np.array([-delta_y, -delta_z, -1.0])
+        exhaust_dir_body = np.array([delta_y, delta_z, -1.0])
         exhaust_dir_body /= np.linalg.norm(exhaust_dir_body) + 1e-9
         exhaust_dir_world = dcm @ exhaust_dir_body
 
@@ -197,6 +205,9 @@ class Plotter:
         
         # Landing legs - GLOBAL VIEW (Phase 3 only)
         if phase == "phase3":
+            # Change leg color to green if landed, otherwise grey
+            leg_color = "green" if landed else "grey"
+            
             for i, azimuth_deg in enumerate(leg_azimuths):
                 alpha = np.deg2rad(leg_deploy * 150)  # 0° when retracted, 150° when deployed
                 psi_leg = np.deg2rad(azimuth_deg)
@@ -212,6 +223,8 @@ class Plotter:
                 self.global_leg_lines[i].set_data([leg_base_global[0], leg_tip_global[0]], 
                                                    [leg_base_global[1], leg_tip_global[1]])
                 self.global_leg_lines[i].set_3d_properties([leg_base_global[2], leg_tip_global[2]])
+                self.global_leg_lines[i].set_color(leg_color)
+                self.leg_lines[i].set_color(leg_color)
         else:
             for leg_line in self.global_leg_lines:
                 leg_line.set_data([], [])
@@ -235,6 +248,7 @@ class Plotter:
         self._history_target = history["target"]
         self._history_phase = history["phase"]
         self._history_leg_deploy = history["leg_deploy"]  # Store leg deployment history
+        self._history_landed = history.get("landed", [False] * len(history["phase"]))  # Track landing status
 
         frames = len(self._history_state)
 
@@ -268,7 +282,8 @@ class Plotter:
             control["leg_deploy"] = self._history_leg_deploy[frame_idx]  # Add deployment state
             target = self._history_target[frame_idx]
             phase = self._history_phase[frame_idx]
-            return self.update(state, control, target, frame_idx=frame_idx, phase=phase)
+            landed = self._history_landed[frame_idx]
+            return self.update(state, control, target, frame_idx=frame_idx, phase=phase, landed=landed)
 
         def _on_slider(val):
             if self._slider_updating:

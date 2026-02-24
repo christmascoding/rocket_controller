@@ -188,6 +188,94 @@ def phase2_flip_controller(phi, theta, psi, omega):
     return clamp(torque_body, -config.AERO_TORQUE_MAX, config.AERO_TORQUE_MAX)
 
 
+def phase1c_controller(state, rocket, time_in_phase1c=0.0):
+    """Powered flip controller for apogee maneuver (Phase 1c).
+    
+    Aligns rocket with retrograde (engine-first) for stable descent entry.
+    Uses gimbal as primary control with low throttle for control authority.
+    Uses vector-based control to avoid angle wrapping issues.
+    """
+    pos = state[0:3]
+    vel = state[3:6]
+    phi, theta, psi = state[6:9]
+    omega = state[9:12]
+    
+    # Constant low throttle for gimbal authority
+    throttle = config.PHASE1C_THROTTLE
+    
+    # Get the rocket's current body Z-axis (nose direction) in world frame
+    u_rocket = body_z_axis_in_world(phi, theta, psi)  # [ux, uy, uz] - nose direction
+    
+    # Get desired direction: retrograde (opposite to velocity)
+    v_mag = np.linalg.norm(vel)
+    if v_mag > 5.0:
+        u_desired = -vel / v_mag  # Point opposite to velocity vector
+    else:
+        # At very low velocity, maintain current attitude
+        u_desired = u_rocket
+    
+    # Compute cross product to get rotation axis (what axis to rotate around)
+    rotation_axis = np.cross(u_rocket, u_desired)
+    rotation_axis_mag = np.linalg.norm(rotation_axis)
+    
+    # Compute angle between current and desired direction using dot product
+    cos_angle = np.clip(np.dot(u_rocket, u_desired), -1.0, 1.0)
+    angle_error = np.arccos(cos_angle)  # This is always in [0, π], no wrapping!
+    
+    if rotation_axis_mag > 1e-6 and angle_error > 1e-4:
+        # Normalize rotation axis
+        rotation_axis_norm = rotation_axis / rotation_axis_mag
+        
+        # Compute desired angular velocity for smooth convergence
+        # Proportional to error angle, limited by max angular acceleration
+        omega_desired_mag = config.PHASE1C_FLIP_KP * angle_error
+        omega_desired = rotation_axis_norm * omega_desired_mag
+        
+        # Compute angular velocity error
+        omega_body = state[9:12]
+        omega_error = omega_desired - omega_body
+        
+        # Use derivative term for damping
+        # tau = M * alpha, where alpha is angular acceleration
+        # We want: omega_error = -KD * (omega_body - omega_desired)
+        # So: tau = M * KD * (omega_desired - omega_body)
+        tau_body = config.PHASE1C_FLIP_KD * omega_error
+        
+        # Convert body-frame torque to gimbal commands
+        # tau_pitch uses gimbal_y, tau_yaw uses gimbal_z
+        # For small gimbal angles: tau ≈ F * L * gimbal
+        F = throttle * rocket.max_thrust
+        L = rocket.cg_from_gimbal
+        
+        gimbal_pitch = tau_body[1] / (F * L + 1e-6)
+        gimbal_yaw = tau_body[2] / (F * L + 1e-6)
+    else:
+        # Already aligned or near singular
+        gimbal_pitch = 0.0
+        gimbal_yaw = 0.0
+        angle_error = 0.0
+    
+    # Clamp gimbal angles to physical limits
+    delta_y = clamp(gimbal_pitch, -config.GIMBAL_MAX, config.GIMBAL_MAX)
+    delta_z = clamp(gimbal_yaw, -config.GIMBAL_MAX, config.GIMBAL_MAX)
+    
+    # Diagnostic output every 0.5s
+    if time_in_phase1c % 0.5 < 0.05:
+        q_mag = np.sqrt(omega[1]**2 + omega[2]**2)
+        print(f"  FLIP t={time_in_phase1c:.2f}s: v_mag={v_mag:.1f}m/s, angle_err={np.rad2deg(angle_error):.1f}°")
+        print(f"         u_rocket=[{u_rocket[0]:.3f}, {u_rocket[1]:.3f}, {u_rocket[2]:.3f}]")
+        print(f"         u_desired=[{u_desired[0]:.3f}, {u_desired[1]:.3f}, {u_desired[2]:.3f}]")
+        print(f"         ω_mag={np.rad2deg(q_mag):.1f}°/s, δy={np.rad2deg(delta_y):.1f}°, δz={np.rad2deg(delta_z):.1f}°")
+    
+    return {
+        "throttle": throttle,
+        "delta_y": delta_y,
+        "delta_z": delta_z,
+        "aero_torque": np.zeros(3),
+        "grid_fins": 1.0,  # Deploy grid fins for CP shift
+    }
+
+
 def phase3_controller(state, rocket, time_in_phase3=0.0, prev_gimbal=(0.0, 0.0)):
     pos = state[0:3]
     vel = state[3:6]
@@ -200,7 +288,9 @@ def phase3_controller(state, rocket, time_in_phase3=0.0, prev_gimbal=(0.0, 0.0))
     
     if z > 0.5 and vz < 0.0:
         # Calculate required deceleration to null velocity at ground
-        a_req = (vz ** 2) / (2.0 * z)  # Energy equation: v² = 2*a*d
+        # Energy equation: v² = 2*a*d, so a_req = v²/(2*d)
+        # Add safety factor 1.5x to ensure aggressive deceleration
+        a_req = (vz ** 2) / (2.0 * z) * 1.5
         thrust_req = rocket.mass * (a_req + config.G)
         throttle = clamp(thrust_req / rocket.max_thrust, config.THROTTLE_MIN_PHASE3, 1.0)
     else:

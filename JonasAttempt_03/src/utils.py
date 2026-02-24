@@ -5,6 +5,15 @@ def clamp(x, lo, hi):
     return np.minimum(np.maximum(x, lo), hi)
 
 
+def normalize_angle(angle):
+    """Wrap angle to [-pi, pi] range."""
+    while angle > np.pi:
+        angle -= 2.0 * np.pi
+    while angle < -np.pi:
+        angle += 2.0 * np.pi
+    return angle
+
+
 def euler_to_dcm(phi, theta, psi):
     """
     Direction cosine matrix from body to world using ZYX convention.

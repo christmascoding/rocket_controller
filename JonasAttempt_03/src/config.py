@@ -67,6 +67,14 @@ PHASE2_FLIP_Kd = 25_000.0  # High derivative for braking
 PHASE2_RATE_DAMP = 50_000.0
 PHASE2_AERO_DAMP = 15_000.0  # Aerodynamic damping torque
 
+# Phase 1c: Powered Flip at apogee
+PHASE1C_THROTTLE = 0.50  # 50% thrust for flip control (gimbal is primary actuator)
+PHASE1C_FLIP_KP = 1.5  # Proportional gain: [rad/s angular velocity / rad angle error]
+PHASE1C_FLIP_KD = 50000.0  # Derivative gain: [N⋅m torque / rad/s angular velocity error]
+PHASE1C_FLIP_SUCCESS_THETA_ERR = np.deg2rad(10.0)  # 10° tolerance
+PHASE1C_FLIP_SUCCESS_RATE = 0.2  # rad/s angular rate threshold
+PHASE1C_FLIP_TIMEOUT = 8.0  # seconds - failsafe to prevent infinite flip
+
 # Phase 3 slew rate limiting (soft-start)
 PHASE3_GIMBAL_SLEW_LIMIT = 0.7  # rad/s (2°/frame @ dt=0.05s) - prevents bang-bang
 PHASE3_RATE_PRIORITY_TIME = 0.2  # seconds to prioritize rate damping only
