@@ -34,10 +34,12 @@ class Simulator:
             "control": [],
             "target": [],
             "phase": [],
+            "leg_deploy": [],
         }
 
         self.phase = "phase1a"
         self.landing_target = np.array([0.0, 0.0])
+        self.leg_deploy_factor = 0.0
         self.phase3_start_time = None
         self.prev_gimbal = (0.0, 0.0)
 
@@ -204,12 +206,18 @@ class Simulator:
 
         sol = solve_ivp(ode, (t, t + dt), self.state, method="RK45", t_eval=[t + dt])
         self.state = sol.y[:, -1]
-
+        
+        # Landing leg deployment: ONLY IN PHASE 3, trigger below 100m, deploy at 0.5/second
+        z = self.state[2]
+        if self.phase == "phase3" and z < 100.0:
+            self.leg_deploy_factor = min(1.0, self.leg_deploy_factor + 0.5 * dt)
+        
         self.history["t"].append(t + dt)
         self.history["state"].append(self.state.copy())
         self.history["control"].append(control)
         self.history["target"].append(pos_des)
         self.history["phase"].append(self.phase)
+        self.history["leg_deploy"].append(self.leg_deploy_factor)
 
     def run(self, total_time, dt):
         frames = int(total_time / dt)

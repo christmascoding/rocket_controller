@@ -27,9 +27,17 @@ class Plotter:
         self.rocket_line, = self.ax_local.plot([], [], [], "k-", lw=3)
         self.exhaust_line, = self.ax_local.plot([], [], [], "r-", lw=2)
         
+        # Landing legs (3 legs, spaced 120° apart)
+        self.leg_lines = [
+            self.ax_local.plot([], [], [], "grey", lw=2.5)[0] for _ in range(3)
+        ]
+        
         # Global plot: phase 3 follow cam
         self.global_rocket_line, = self.ax_global.plot([], [], [], "k-", lw=3)
         self.global_exhaust_line, = self.ax_global.plot([], [], [], "r-", lw=2)
+        self.global_leg_lines = [
+            self.ax_global.plot([], [], [], "grey", lw=2.5)[0] for _ in range(3)
+        ]
         
         # Live telemetry text box
         self.telemetry_text = self.fig.text(
@@ -164,14 +172,60 @@ class Plotter:
         self.exhaust_line.set_data([engine_origin[0], exhaust_tip[0]], [engine_origin[1], exhaust_tip[1]])
         self.exhaust_line.set_3d_properties([engine_origin[2], exhaust_tip[2]])
         self.exhaust_line.set_color((1.0, 0.2 + 0.8 * throttle, 0.0))
+        
+        # Landing legs (3 legs at 120° spacing) - LOCAL VIEW
+        leg_deploy = control.get("leg_deploy", 0.0)
+        leg_length = 2.5
+        leg_azimuths = [0, 120, 240]
+        
+        for i, azimuth_deg in enumerate(leg_azimuths):
+            # Deployment angle: 0° (retracted up along body) → 150° (extended down)
+            alpha = np.deg2rad(leg_deploy * 150)  # 0° when retracted, 150° when deployed
+            psi_leg = np.deg2rad(azimuth_deg)
+            
+            x_tip_body = leg_length * np.sin(alpha) * np.cos(psi_leg)
+            y_tip_body = leg_length * np.sin(alpha) * np.sin(psi_leg)
+            z_tip_body = leg_length * np.cos(alpha) - config.CG_FROM_GIMBAL
+            
+            leg_tip_body_vec = np.array([x_tip_body, y_tip_body, z_tip_body])
+            leg_tip_world = dcm @ leg_tip_body_vec
+            leg_base = engine_origin
+            
+            self.leg_lines[i].set_data([leg_base[0], leg_tip_world[0]], 
+                                        [leg_base[1], leg_tip_world[1]])
+            self.leg_lines[i].set_3d_properties([leg_base[2], leg_tip_world[2]])
+        
+        # Landing legs - GLOBAL VIEW (Phase 3 only)
+        if phase == "phase3":
+            for i, azimuth_deg in enumerate(leg_azimuths):
+                alpha = np.deg2rad(leg_deploy * 150)  # 0° when retracted, 150° when deployed
+                psi_leg = np.deg2rad(azimuth_deg)
+                
+                x_tip_body = leg_length * np.sin(alpha) * np.cos(psi_leg)
+                y_tip_body = leg_length * np.sin(alpha) * np.sin(psi_leg)
+                z_tip_body = leg_length * np.cos(alpha) - config.CG_FROM_GIMBAL
+                
+                leg_tip_body_vec = np.array([x_tip_body, y_tip_body, z_tip_body])
+                leg_tip_global = pos + (dcm @ leg_tip_body_vec)
+                leg_base_global = engine_origin_global
+                
+                self.global_leg_lines[i].set_data([leg_base_global[0], leg_tip_global[0]], 
+                                                   [leg_base_global[1], leg_tip_global[1]])
+                self.global_leg_lines[i].set_3d_properties([leg_base_global[2], leg_tip_global[2]])
+        else:
+            for leg_line in self.global_leg_lines:
+                leg_line.set_data([], [])
+                leg_line.set_3d_properties([])
 
         return (
             self.global_path_line,
             self.target_dot,
             self.rocket_line,
             self.exhaust_line,
+            *self.leg_lines,
             self.global_rocket_line,
             self.global_exhaust_line,
+            *self.global_leg_lines,
             self.telemetry_text,
         )
 
@@ -180,6 +234,7 @@ class Plotter:
         self._history_control = history["control"]
         self._history_target = history["target"]
         self._history_phase = history["phase"]
+        self._history_leg_deploy = history["leg_deploy"]  # Store leg deployment history
 
         frames = len(self._history_state)
 
@@ -209,7 +264,8 @@ class Plotter:
             self.current_frame = frame_idx
             
             state = self._history_state[frame_idx]
-            control = self._history_control[frame_idx]
+            control = self._history_control[frame_idx].copy()  # Make a copy to add leg_deploy
+            control["leg_deploy"] = self._history_leg_deploy[frame_idx]  # Add deployment state
             target = self._history_target[frame_idx]
             phase = self._history_phase[frame_idx]
             return self.update(state, control, target, frame_idx=frame_idx, phase=phase)
