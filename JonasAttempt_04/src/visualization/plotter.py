@@ -230,8 +230,31 @@ class Plotter:
             plume_dir_body = np.array([-np.sin(gy), np.sin(gz),
                                        -np.cos(gy)*np.cos(gz)])
             plume_dir = R @ plume_dir_body
-            plume_len = throttle * L * 0.8
-            plume_color = plt.cm.hot(0.3 + 0.7 * throttle)
+            # Length: 10% (min) to 100% (max) of L*0.8
+            plume_len = (0.1 + 0.9 * throttle) * L * 0.8
+            # Color: white → yellow → orange → dark red
+            # Define color stops
+            colors = [
+                (1.0, 1.0, 1.0),      # white
+                (1.0, 1.0, 0.0),      # yellow
+                (1.0, 0.5, 0.0),      # orange
+                (0.7, 0.0, 0.0)       # dark red
+            ]
+            # Interpolate color
+            t = np.clip(throttle, 0.0, 1.0)
+            if t < 0.33:
+                # white to yellow
+                frac = t / 0.33
+                c0, c1 = colors[0], colors[1]
+            elif t < 0.66:
+                # yellow to orange
+                frac = (t - 0.33) / (0.33)
+                c0, c1 = colors[1], colors[2]
+            else:
+                # orange to dark red
+                frac = (t - 0.66) / (0.34)
+                c0, c1 = colors[2], colors[3]
+            plume_color = tuple(np.array(c0) * (1 - frac) + np.array(c1) * frac)
             _arrow3d(ax, tail, plume_dir * plume_len,
                      plume_color, 2.5, f'Thrust {throttle*100:.0f}%')
 
