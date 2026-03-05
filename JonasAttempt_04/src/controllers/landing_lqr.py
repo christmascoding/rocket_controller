@@ -53,53 +53,70 @@ class LandingLQR(BaseController):
 
         debug = {}
 
-        # ---- 1. vertical throttle (suicide-burn profile) ------------------
+        # ---- 1. throttle: suicide-burn on TOTAL speed ----------------------
         alt = pos[2]
         vz  = vel[2]                       # negative when falling
-        a_max = F_MAX / MASS - G           # max available deceleration
+        v_hor_mag = np.linalg.norm(vel[:2])
+        v_total = np.linalg.norm(vel)
+        a_max = F_MAX / MASS - G           # max available vertical decel
         speed_down = max(-vz, 0.0)         # positive speed toward ground
         d_stop = speed_down**2 / (2.0 * a_max) if a_max > 0.1 else 1e9
 
-        # desired vertical accel: constant deceleration to zero
+        # Vertical deceleration need
         if alt < 0.5:
-            # very close to ground — gentle thrust
             accel_z_des = -vz * 3.0 + G
         elif speed_down > 1.0:
-            # proportional-ish to velocity
             time_to_ground = alt / speed_down if speed_down > 0.5 else 1e6
             accel_z_des = speed_down / max(time_to_ground, 0.5) + G
-            # cap at physical max
             accel_z_des = min(accel_z_des, F_MAX / MASS)
         else:
-            # hovering / slow — maintain altitude
-            accel_z_des = G + 2.0 * (0.0 - vz) + 0.5 * (5.0 - alt)
+            # Slow vertical → soft descent, don't hover
+            accel_z_des = G + 2.0 * (0.0 - vz) - 1.5  # bias toward descending
 
-        throttle_nom = np.clip(accel_z_des * MASS / F_MAX, 0.0, 1.0)
+        # Horizontal braking need — we want to kill v_hor in proportion
+        # to the remaining altitude.  If not enough altitude left, brake hard.
+        if v_hor_mag > 2.0:
+            # Time budget: use remaining altitude to estimate how long we have
+            t_budget = alt / max(speed_down, 5.0) if speed_down > 1.0 else alt / 5.0
+            t_budget = max(t_budget, 1.0)
+            accel_hor_des = v_hor_mag / t_budget
+            accel_hor_des = min(accel_hor_des, F_MAX / MASS * 0.5)  # max 50% for lateral
+        else:
+            accel_hor_des = 0.0
 
-        # ---- 2. lateral PD toward landing target --------------------------
-        target = LANDING_TARGET
-        pos_err_xy = target[:2] - pos[:2]
-        vel_xy     = vel[:2]
+        # Total thrust: vector sum of vertical + horizontal needs
+        accel_total = np.sqrt(accel_z_des**2 + accel_hor_des**2)
+        throttle_nom = np.clip(accel_total * MASS / F_MAX, 0.0, 1.0)
 
-        Kp_lat = 0.15
-        Kd_lat = 0.6
-        accel_xy_des = Kp_lat * pos_err_xy - Kd_lat * vel_xy
+        # ---- 2. desired attitude: retrograde → vertical -------------------
+        #
+        # Strategy: always point retrograde (= into the velocity vector)
+        # which naturally kills ALL velocity components.  Once the rocket
+        # is slow enough, transition to pure vertical so it descends
+        # straight down and touches down wherever it happens to be.
+        #
+        # No position-targeting — we land wherever we end up.
 
-        # Desired tilt angles from lateral accel
-        # For small angles:  a_x ≈ g·θ,  a_y ≈ −g·φ
-        T_current = max(throttle_nom * F_MAX, MASS * G * 0.3)
-        theta_des = np.clip(MASS * accel_xy_des[0] / T_current,
-                            -0.3, 0.3)
-        phi_des   = np.clip(-MASS * accel_xy_des[1] / T_current,
-                            -0.3, 0.3)
+        v_hor  = np.linalg.norm(vel[:2])
+        v_tot  = np.linalg.norm(vel)
 
-        # Desired direction for body z
-        desired_dir = np.array([np.sin(theta_des),
-                                -np.sin(phi_des),
-                                np.cos(theta_des) * np.cos(phi_des)])
-        n = np.linalg.norm(desired_dir)
-        if n > 1e-6:
-            desired_dir /= n
+        # ── retrograde direction ──
+        if v_tot > 5.0:
+            retro_dir = -vel / v_tot
+        else:
+            retro_dir = np.array([0.0, 0.0, 1.0])  # straight up when slow
+
+        # ── vertical (for final descent) ──
+        vert_dir = np.array([0.0, 0.0, 1.0])
+
+        # ── blending: retrograde while fast, vertical when slow ──
+        # Transition when horizontal speed < 20 m/s and total < 50 m/s
+        spd_frac = np.clip(max(v_hor / 20.0, v_tot / 50.0), 0.0, 1.0)
+        # spd_frac=1 → fast → retrograde; spd_frac=0 → slow → vertical
+        desired_dir = spd_frac * retro_dir + (1.0 - spd_frac) * vert_dir
+        n2 = np.linalg.norm(desired_dir)
+        if n2 > 1e-6:
+            desired_dir /= n2
         else:
             desired_dir = np.array([0.0, 0.0, 1.0])
 
@@ -132,8 +149,18 @@ class LandingLQR(BaseController):
         ail_z = float(np.clip(-800.0 * att_err[2] - 400.0 * omega[2],
                               -AILERON_MAX_TORQUE, AILERON_MAX_TORQUE))
 
+        # Pitch/yaw aileron assist — grid fins provide direct body-frame
+        # torque to supplement the gimbal.  Sign: negative PD on att_err
+        # (positive err → negative corrective torque).
+        KP_AIL = 3000.0    # N·m per rad of error
+        KD_AIL = 1500.0    # N·m·s per rad/s
+        ail_x = float(np.clip(-KP_AIL * att_err[0] - KD_AIL * omega[0],
+                              -AILERON_MAX_TORQUE, AILERON_MAX_TORQUE))
+        ail_y = float(np.clip(-KP_AIL * att_err[1] - KD_AIL * omega[1],
+                              -AILERON_MAX_TORQUE, AILERON_MAX_TORQUE))
+
         control = np.array([throttle_nom, gimbal_y, gimbal_z,
-                            0.0, 0.0, ail_z])
+                            ail_x, ail_y, ail_z])
 
         debug['desired_dir'] = desired_dir
         debug['att_err']     = att_err
@@ -152,16 +179,26 @@ class LandingLQR(BaseController):
         try:
             T = max(throttle_nom * F_MAX, MASS * G * 0.3)
             L = GIMBAL_TO_CG
-            # Linearised plant around vertical orientation:
-            #   Gimbal creates moment: M_y = −L·T·gy,  M_x = −L·T·(−gz)
-            #   So: dω_x/dt = L·T·(−gz) / I_xx  →  B maps u=[gy,gz]
-            #       dω_y/dt = −L·T·gy / I_yy
-            #   But our error convention (quat_error_vec) means the
-            #   controller output u = −Kx should produce corrective
-            #   gimbal commands WITH the geometric sign inversion.
-            #   We absorb the sign into B so that  u = −Kx  "just works".
-            b_x = L * T / I_XX         # maps gz → α_x  (with sign absorbed)
-            b_y = L * T / I_YY         # maps gy → α_y
+            # Linearised plant around vertical orientation.
+            #
+            # From propulsion.py:
+            #   F_body = T·[sin(gy), −sin(gz), cos(gy)cos(gz)]
+            #   r_engine = [0, 0, −L]
+            #   M = r × F:
+            #     M_x = (−L)·(−T·sin(gz)) − 0 = … wait, let's do it properly:
+            #     M = [0·Fz − (−L)·Fy,  (−L)·Fx − 0·Fz,  0]
+            #       = [L·Fy,  −L·Fx,  0]
+            #       = [L·(−T·sin(gz)),  −L·(T·sin(gy)),  0]
+            #       = [−L·T·sin(gz),    −L·T·sin(gy),    0]
+            #
+            # Linearised (small angles):
+            #   dω_x/dt = M_x / I_xx = −(L·T / I_xx)·gz = −g_x · gz
+            #   dω_y/dt = M_y / I_yy = −(L·T / I_yy)·gy = −g_y · gy
+            #
+            # State: x = [e_x, e_y, ω_x, ω_y]
+            # Control: u = [gy, gz]
+            g_x = L * T / I_XX
+            g_y = L * T / I_YY
 
             A = np.array([
                 [0, 0, 1, 0],
@@ -170,13 +207,14 @@ class LandingLQR(BaseController):
                 [0, 0, 0, 0],
             ], dtype=float)
 
-            # B maps [gimbal_y, gimbal_z] → [dω_x/dt, dω_y/dt]
-            # Consistent with u = +K @ error  (corrective)
+            # B: u = [gy, gz] → [dω_x/dt, dω_y/dt]
+            #   dω_x/dt = −g_x · gz   →  B[2,1] = −g_x
+            #   dω_y/dt = −g_y · gy   →  B[3,0] = −g_y
             B = np.array([
-                [0,     0],
-                [0,     0],
-                [0,   b_x],
-                [b_y,   0],
+                [0,      0    ],
+                [0,      0    ],
+                [0,     -g_x  ],
+                [-g_y,   0    ],
             ], dtype=float)
 
             Q = np.diag([40.0, 40.0, 4.0, 4.0])

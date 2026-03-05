@@ -39,6 +39,56 @@ def _arrow3d(ax, origin, vec, color='r', lw=1.5, label=None, alpha=1.0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Landing-leg geometry
+# ═══════════════════════════════════════════════════════════════════════════
+
+_LEG_LENGTH   = 2.5           # m
+_LEG_AZIMUTHS = [0, 120, 240]        # 3 legs, 120° spacing
+_DEPLOY_ALT   = 50.0         # m — deploy starts here
+_DEPLOY_FULL  = 10.0         # m — fully open by this alt
+_LEG_STOW_ANGLE = np.radians(10)    # retracted: 10° from body axis
+_LEG_OPEN_ANGLE = np.radians(135)   # deployed : 135° outward from body
+
+
+def _draw_legs(ax, engine_pt, body_z, body_x, body_y, R, alt, phase,
+               *, local=True, pos=None):
+    """Draw 4 landing legs on *ax*.
+
+    *engine_pt* is the 3-D base point in the view's coordinate system.
+    Deploy fraction ramps linearly from 0 above 50 m to 1 below 10 m.
+    """
+    # deploy fraction
+    if phase == 'landed':
+        deploy = 1.0
+    elif alt < _DEPLOY_ALT:
+        deploy = np.clip(1.0 - (alt - _DEPLOY_FULL) /
+                         (_DEPLOY_ALT - _DEPLOY_FULL), 0.0, 1.0)
+    else:
+        deploy = 0.0
+
+    sweep = _LEG_STOW_ANGLE + deploy * (_LEG_OPEN_ANGLE - _LEG_STOW_ANGLE)
+    color = '#20c997' if phase == 'landed' else '#444'
+
+    for az_deg in _LEG_AZIMUTHS:
+        az = np.radians(az_deg)
+        # Leg tip in body frame (from engine end, pointing upward with outward angle)
+        radial_body = np.cos(az) * np.array([1, 0, 0]) + \
+                      np.sin(az) * np.array([0, 1, 0])
+        tip_body = (np.cos(sweep) * np.array([0, 0, 1]) +
+                    np.sin(sweep) * radial_body) * _LEG_LENGTH
+
+        if local:
+            tip = engine_pt + R @ tip_body
+        else:
+            tip = engine_pt + R @ tip_body
+
+        ax.plot([engine_pt[0], tip[0]],
+                [engine_pt[1], tip[1]],
+                [engine_pt[2], tip[2]],
+                color=color, lw=1.8, solid_capstyle='round')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Plotter
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -164,6 +214,10 @@ class Plotter:
         tail = -body_z * 3.0
         ax.plot(*zip(tail, nose), color='white', lw=3, solid_capstyle='round')
 
+        # landing legs (local view)
+        _draw_legs(ax, tail, body_z, body_x, body_y,
+                   R, pos[2], phase, local=True)
+
         # body-frame axes
         _arrow3d(ax, [0,0,0], body_x * L * 0.4, '#ff6b6b', 1, 'x_B')
         _arrow3d(ax, [0,0,0], body_y * L * 0.4, '#51cf66', 1, 'y_B')
@@ -246,6 +300,10 @@ class Plotter:
         nose_w = pos + body_z * 3.0
         tail_w = pos - body_z * 3.0
         ax2.plot(*zip(tail_w, nose_w), color='white', lw=2.5)
+
+        # landing legs (global view)
+        _draw_legs(ax2, tail_w, body_z, body_x, body_y,
+                   R, pos[2], phase, local=False, pos=pos)
 
         # thrust plume in world
         if throttle > 0.01:

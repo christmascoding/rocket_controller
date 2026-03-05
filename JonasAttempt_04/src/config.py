@@ -82,7 +82,7 @@ FLIP_ANGLE_THRESHOLD = np.radians(10.0)   # within 10° of retrograde → done
 FLIP_TIMEOUT         = 60.0                # s max for flip manoeuvre
 FLIP_THROTTLE        = 0.25               # nominal throttle during flip
 
-SUICIDE_BURN_MARGIN  = 1.20               # 20 % safety factor on stopping dist.
+SUICIDE_BURN_MARGIN  = 1.0000001               #  safety factor on stopping dist.
 LANDING_ALT          = 1.0                # m   touchdown altitude
 LANDING_VEL          = 2.0                # m/s max touchdown speed
 

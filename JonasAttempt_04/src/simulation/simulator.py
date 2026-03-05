@@ -43,13 +43,26 @@ class Simulator:
 
     # ──────────────────────── public API ──────────────────────────────────
 
-    def run(self, state0: np.ndarray | None = None) -> DataLogger:
+    def run_from_phase(self, phase: str, t0: float,
+                       state0: np.ndarray) -> DataLogger:
+        """Resume simulation from *phase* at time *t0* with *state0*.
+
+        Useful for fast iteration: run once from scratch, save snapshot,
+        then reload and re-simulate only the later phases.
+        """
+        self.pm.phase = phase
+        self.pm.phase_start_time = t0
+        self.pm.phase_log = [(t0, phase)]
+        return self.run(state0=state0, t0=t0)
+
+    def run(self, state0: np.ndarray | None = None,
+            t0: float = 0.0) -> DataLogger:
         """Run the full simulation. Returns the filled DataLogger."""
         if state0 is None:
             state0 = self._default_initial_state()
         state = state0.copy()
 
-        t = 0.0
+        t = t0
         step = 0
         wall0 = _time.perf_counter()
 
