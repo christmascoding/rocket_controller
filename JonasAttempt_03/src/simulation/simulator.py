@@ -1,3 +1,4 @@
+from src.controllers.mpc_flip import mpc_flip_cost, rocket_flip_dynamics, save_flip_scenario
 import numpy as np
 from scipy.integrate import solve_ivp
 
@@ -8,10 +9,11 @@ from src.controllers.cascaded import (
     inner_loop,
     aero_surface_loop,
     phase3_controller,
-    phase1c_controller,
     pure_pursuit,
     phase2_flip_controller,
 )
+from src.controllers.mpc_flip import mpc_flip_cost
+from scipy.optimize import minimize
 from src.models.trajectory import sample_trajectory
 from src.utils import body_z_axis_in_world, normalize_angle
 from src.physics.dynamics import state_derivative
@@ -37,6 +39,8 @@ class Simulator:
             "phase": [],
             "leg_deploy": [],
             "landed": [],
+            "f_desired": [],
+            "u_desired": [],
         }
 
         self.phase = "phase1a"
@@ -94,6 +98,16 @@ class Simulator:
                 print(f"  Velocity: Vx={self.state[3]:.1f}, Vy={self.state[4]:.1f}, Vz={self.state[5]:.1f}m/s")
                 print(f"  Attitude: θ={np.rad2deg(self.state[7]):.1f}°, ψ={np.rad2deg(self.state[8]):.1f}°")
                 print(f"{'='*70}\n")
+                # Save flip scenario for optimization
+                scenario = {
+                    'state0': [self.state[7], self.state[8], self.state[10], self.state[11]],
+                    'altitude': self.state[2],
+                    'velocity': self.state[3:6],
+                    'attitude': self.state[6:9],
+                    'rates': self.state[9:12],
+                    'landing_target': self.landing_target,
+                }
+                save_flip_scenario('flip_scenario.json', scenario)
         
         # Phase 1c → 2: Flip complete or timeout
         if self.phase == "phase1c":
@@ -191,6 +205,10 @@ class Simulator:
         vel = self.state[3:6]
         phi, theta, psi = self.state[6:9]
         omega = self.state[9:12]
+        
+        # Initialize vectors to track (for visualization)
+        f_desired = np.zeros(3)
+        u_desired = np.zeros(3)
 
         if self.phase == "phase1a":
             # Pure Pursuit guidance
@@ -203,6 +221,12 @@ class Simulator:
                 # Convert desired pitch to desired direction vector
                 # theta_des = 0 means straight up (Z), positive theta_des means pitch toward +X
                 u_des = np.array([np.sin(theta_des), 0.0, np.cos(theta_des)])
+            
+            # For visualization: show the pure pursuit carrot point on the trajectory
+            pos_des = carrot_pos
+            vel_des = np.zeros(3)  # Coasting phase, no velocity target
+            f_desired = outer_loop(pos, vel, pos_des, vel_des, self.rocket.mass)
+            u_desired = u_des  # Track the desired direction
             
             throttle = 1.0
             delta_y, delta_z = inner_loop(
@@ -218,45 +242,79 @@ class Simulator:
             )
             aero_torque = np.zeros(3)
             grid_fins = 0.0
-            pos_des = carrot_pos
         elif self.phase == "phase1b":
+            # Phase 1b: COAST PHASE - No thrust, attitude control via aero surfaces (grid fins)
+            # Sample trajectory to get desired attitude direction
             pos_des, vel_des = sample_trajectory(t, self.traj_t, self.traj_pos, self.traj_vel)
-            f_des = outer_loop(pos, vel, pos_des, vel_des, self.rocket.mass)
-            u_des, _ = middle_loop(
-                f_des, self.rocket.max_thrust, tilt_gain=config.MIDDLE_TILT_GAIN
-            )
+            
+            # Desired attitude: point rocket toward trajectory target (normalized direction)
+            target_rel = pos_des - pos
+            target_dist = np.linalg.norm(target_rel)
+            if target_dist > 1e-6:
+                u_desired = target_rel / target_dist
+            else:
+                u_desired = body_z_axis_in_world(phi, theta, psi)
+            
+            # Compute forces for visualization (what would be needed with thrust)
+            f_desired = outer_loop(pos, vel, pos_des, vel_des, self.rocket.mass)
+            
+            # COAST: No gimbal (throttle = 0.0), use aero surfaces for attitude control
             throttle = 0.0
-            delta_y, delta_z = inner_loop(
-                phi,
-                theta,
-                psi,
-                omega,
-                u_des,
-                throttle,
-                self.rocket.max_thrust,
-                self.rocket.cg_from_gimbal,
+            delta_y, delta_z = 0.0, 0.0  # No gimbal authority during coast
+            
+            # Use ailerons (grid fins) to control attitude
+            aero_torque = aero_surface_loop(
+                phi, theta, psi, omega, u_desired,
+                kp=config.Kp_att, kd=config.Kd_att
             )
-            aero_torque = np.zeros(3)
-            grid_fins = 0.0
+            grid_fins = 0.5  # Partial grid fin deflection for attitude control
         elif self.phase == "phase1c":
-            # Powered flip controller (gimbal + low throttle)
-            pos_des = np.array([pos[0], pos[1], 0.0])
-            time_in_phase1c = t - self.phase1c_start_time if self.phase1c_start_time else 0.0
-            
-            # Call phase1c_controller (already imported at top)
-            control_out = phase1c_controller(self.state, self.rocket, time_in_phase1c)
-            
-            throttle = control_out["throttle"]
-            delta_y = control_out["delta_y"]
-            delta_z = control_out["delta_z"]
-            aero_torque = control_out["aero_torque"]
-            grid_fins = control_out["grid_fins"]
-            
-            # Debug output every 50 frames during phase 1c
-            if self.frame_count % 50 == 0:
-                print(f"[Phase1c] t={t:.2f}s, throttle={throttle:.2f}, delta_y={np.rad2deg(delta_y):.1f}°, delta_z={np.rad2deg(delta_z):.1f}°")
-            
-            self.prev_gimbal = (delta_y, delta_z)
+            # Phase 1c: Powered flip at apogee using MPC controller
+            # Minimal state: [theta, psi, q, r]
+            theta = self.state[7]
+            psi = self.state[8]
+            q = self.state[10]
+            r = self.state[11]
+            state0 = [theta, psi, q, r]
+            target = [np.pi, 0.0]  # Flip to pi pitch, 0 yaw
+            N = 20
+            dt_mpc = 0.1
+            u0 = np.zeros((N, 2)).flatten()
+            bounds = [(-np.deg2rad(config.GIMBAL_MAX_DEG), np.deg2rad(config.GIMBAL_MAX_DEG))] * (N * 2)
+            # Use optimized weights from previous run
+            w_theta = 94.85
+            w_psi = 43.55
+            w_q = 2.39
+            w_r = 1.23
+            w_u = 0.53
+            def custom_cost(u_flat, state0, rocket, N, dt, target):
+                u = u_flat.reshape(N, 2)
+                state = np.array(state0)
+                cost = 0.0
+                for k in range(N):
+                    state = rocket_flip_dynamics(state, u[k], rocket, dt)
+                    theta_err = state[0] - target[0]
+                    psi_err = state[1] - target[1]
+                    q = state[2]
+                    r = state[3]
+                    cost += w_theta * theta_err**2 + w_psi * psi_err**2 + w_q * q**2 + w_r * r**2
+                    cost += w_u * (u[k][0]**2 + u[k][1]**2)
+                if abs(state[2]) > 1.0 or abs(state[3]) > 1.0:
+                    cost += 1000.0
+                return cost
+            res = minimize(custom_cost, u0, args=(state0, self.rocket, N, dt_mpc, target), bounds=bounds)
+            u_opt = res.x.reshape(N, 2)
+            delta_y, delta_z = u_opt[0]
+            throttle = config.PHASE1C_THROTTLE
+            # Aerodynamic damping and grid fins as before
+            aero_damp_1c = -config.PHASE2_AERO_DAMP * 1.0 * omega
+            aero_torque = aero_damp_1c
+            grid_fins = 1.0
+            # For visualization and compatibility, define pos_des, vel_des, f_desired, u_desired
+            pos_des = np.array([self.landing_target[0], self.landing_target[1], pos[2]])
+            vel_des = np.zeros(3)
+            f_desired = np.zeros(3)
+            u_desired = np.zeros(3)
         elif self.phase == "phase2":
             pos_des = np.array([pos[0], pos[1], 0.0])
             vel_des = np.array([0.0, 0.0, vel[2]])
@@ -265,17 +323,26 @@ class Simulator:
             throttle = 0.0
             delta_y, delta_z = 0.0, 0.0
             
-            # Simple damping torque only
-            aero_torque = -config.PHASE2_AERO_DAMP * omega
-            grid_fins = 1.0
+            # Reduced damping torque (allow lateral slip) + small roll bias for sideways drift
+            aero_damp = -config.PHASE2_AERO_DAMP * config.PHASE2_AERO_DAMP_SCALE * omega
+            side_torque = np.array([config.PHASE2_SIDE_TORQUE, 0.0, 0.0])
+            aero_torque = aero_damp + side_torque
+            grid_fins = 0.5
         elif self.phase == "phase3":
             pos_des = np.array([self.landing_target[0], self.landing_target[1], 0.0])
             vel_des = np.zeros(3)
             time_in_phase3 = t - self.phase3_start_time if self.phase3_start_time else 0.0
-            throttle, delta_y, delta_z = phase3_controller(self.state, self.rocket, time_in_phase3, self.prev_gimbal)
+            throttle, delta_y, delta_z, aero_torque = phase3_controller(self.state, self.rocket, time_in_phase3, self.prev_gimbal)
             self.prev_gimbal = (delta_y, delta_z)
-            aero_torque = np.zeros(3)
-            grid_fins = 0.0
+            grid_fins = 1.0  # Grid fins deployed for aero control
+            
+            # Compute desired vectors for visualization
+            f_desired = outer_loop(pos, vel, pos_des, vel_des, self.rocket.mass)
+            vel_mag = np.linalg.norm(vel)
+            if vel_mag > 1e-3:
+                u_desired = -vel / vel_mag  # retrograde thrust direction
+            else:
+                u_desired = np.array([0.0, 0.0, 1.0])
         else:  # landed
             pos_des = np.array([0.0, 0.0, 0.0])
             vel_des = np.zeros(3)
@@ -283,6 +350,10 @@ class Simulator:
             delta_y, delta_z = 0.0, 0.0
             aero_torque = np.zeros(3)
             grid_fins = 0.0
+            
+            # No desired vectors when landed
+            f_desired = np.zeros(3)
+            u_desired = np.zeros(3)
 
         control = {
             "throttle": throttle,
@@ -291,10 +362,10 @@ class Simulator:
             "aero_torque": aero_torque,
             "grid_fins": grid_fins,
         }
-        return control, pos_des
+        return control, pos_des, f_desired, u_desired
 
     def step(self, t, dt):
-        control, pos_des = self.compute_control(t)
+        control, pos_des, f_desired, u_desired = self.compute_control(t)
 
         def ode(_t, y):
             return state_derivative(_t, y, control, self.rocket, phase=self.phase)
@@ -314,6 +385,8 @@ class Simulator:
         self.history["phase"].append(self.phase)
         self.history["leg_deploy"].append(self.leg_deploy_factor)
         self.history["landed"].append(self.landed)
+        self.history["f_desired"].append(f_desired.copy())
+        self.history["u_desired"].append(u_desired.copy())
         
         self.frame_count += 1
 

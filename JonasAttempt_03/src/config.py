@@ -47,6 +47,10 @@ Kd_pos = np.array([6.5, 6.5, 1.00])
 Kp_att = 300_000.0
 Kd_att = 40_000.0
 
+# Phase 1C specific attitude control gains (aggressive gimbal for flip maneuver)
+Kp_att_phase1c = 500_000.0  # Higher proportional gain for immediate gimbal response
+Kd_att_phase1c = 140_000.0  # Higher damping to prevent overshoot during 180° flip
+
 Kp_z = 0.08
 Kd_z = 0.6
 Kp_xy_phase3 = 0.015
@@ -66,14 +70,16 @@ PHASE2_FLIP_Kd = 25_000.0  # High derivative for braking
 # Phase 2 angular rate damping (anti-spiral)
 PHASE2_RATE_DAMP = 50_000.0
 PHASE2_AERO_DAMP = 15_000.0  # Aerodynamic damping torque
+PHASE2_AERO_DAMP_SCALE = 0.15  # Reduce damping to allow sideways slip
+PHASE2_SIDE_TORQUE = 4_000.0  # N·m constant roll bias for lateral drift
 
 # Phase 1c: Powered Flip at apogee
-PHASE1C_THROTTLE = 0.50  # 50% thrust for flip control (gimbal is primary actuator)
+PHASE1C_THROTTLE = 0.75  # 75% thrust for better control authority during flip
 PHASE1C_FLIP_KP = 1.5  # Proportional gain: [rad/s angular velocity / rad angle error]
 PHASE1C_FLIP_KD = 50000.0  # Derivative gain: [N⋅m torque / rad/s angular velocity error]
-PHASE1C_FLIP_SUCCESS_THETA_ERR = np.deg2rad(10.0)  # 10° tolerance
-PHASE1C_FLIP_SUCCESS_RATE = 0.2  # rad/s angular rate threshold
-PHASE1C_FLIP_TIMEOUT = 8.0  # seconds - failsafe to prevent infinite flip
+PHASE1C_FLIP_SUCCESS_THETA_ERR = np.deg2rad(2.0)  # 2° tolerance - much stricter alignment
+PHASE1C_FLIP_SUCCESS_RATE = 0.05  # rad/s angular rate threshold - much stricter stability
+PHASE1C_FLIP_TIMEOUT = 60.0  # seconds - allow up to 60s for flip
 
 # Phase 3 slew rate limiting (soft-start)
 PHASE3_GIMBAL_SLEW_LIMIT = 0.7  # rad/s (2°/frame @ dt=0.05s) - prevents bang-bang
@@ -82,6 +88,9 @@ PHASE3_SOFT_ENGAGEMENT_TIME = 0.5  # seconds for gradual gain ramp-up
 PHASE3_ROLL_DAMPING = 5_000.0  # Artificial roll damping (simulates RCS)
 PHASE3_IGNITION_SAFETY_MARGIN = 0.98  # Trigger at d_stop >= 0.98*Z (2% margin - precision burn)
 PHASE3_ATTITUDE_ONLY_ALT = 50.0  # m - below this, allow horizontal corrections
+PHASE3_RETRO_TILT_GAIN = 1.0  # scale for retrograde tilt command (1.0 ~= v/g)
+PHASE3_RETRO_TILT_MAX_DEG = 20.0  # max tilt for retrograde pointing
+PHASE3_RETRO_TILT_MAX = np.deg2rad(PHASE3_RETRO_TILT_MAX_DEG)
 
 # Fin/RCS control gains (reduced)
 Kp_fin = 1_500.0

@@ -1199,6 +1199,67 @@ def update(self, sim_state, control, target_pos, frame_idx, phase, landed):
         telemetry_text.set_color("cyan")    # Cyan for hover-slam
 ```
 
+### Live Telemetry Data Fields
+
+The telemetry text box displays real-time control output values:
+
+**Example Display** (Phase 2 - Aerodynamic Control):
+```
+PHASE: PHASE2
+Pos: [  12345.2,    -234.1,   45300.0] m
+Vel: [   145.3,      -5.2,   -250.6] m/s
+Gimbal: [    0.0,      0.0] deg  Thrust:  0.0%
+Ailerons: τ=   23450 N⋅m  Grid Fins: 100.0%
+```
+
+**Field Meanings**:
+
+| Field | Units | Description | Phase Active | Range |
+|-------|-------|-------------|--------------|-------|
+| **PHASE** | - | Current control phase | All | PHASE1A, PHASE1B, PHASE1C, PHASE2, PHASE3 |
+| **Pos** | m | Position in world frame [X, Y, Z] | All | X/Y: ±20km, Z: 0-150km |
+| **Vel** | m/s | Velocity in world frame [Vx, Vy, Vz] | All | ±500 m/s typical |
+| **Gimbal** | deg | Engine gimbal deflection [δy, δz] | All | ±15° (Phase 1-2), ±10° (Phase 3) |
+| **Thrust** | % | Throttle percentage | All | 0-100% |
+| **Ailerons: τ** | N⋅m | Aerodynamic torque magnitude | Phase 2 | 0-35,000 N⋅m |
+| **Grid Fins** | % | Grid fin deployment factor | Phase 2 | 0-100% |
+
+**Phase-Specific Data**:
+
+**Phases 1a/1b/1c** (Powered/Coast/Flip):
+```
+PHASE: PHASE1C
+Pos: [  12300.5,    -120.3,   95200.1] m
+Vel: [   180.2,      -3.5,    -50.8] m/s
+Gimbal: [    3.2,     -1.5] deg  Thrust: 85.3%
+Ailerons: τ=       0 N⋅m  Grid Fins:   0.0%    ← Engine control (no ailerons)
+```
+
+**Phase 2** (Ballistic Descent):
+```
+PHASE: PHASE2
+Pos: [  12345.2,    -234.1,   45300.0] m
+Vel: [   145.3,      -5.2,   -250.6] m/s
+Gimbal: [    0.0,      0.0] deg  Thrust:  0.0%  ← Engine OFF
+Ailerons: τ=   23450 N⋅m  Grid Fins: 100.0%    ← Grid fin control active
+```
+
+**Phase 3** (Hover-Slam Landing):
+```
+PHASE: PHASE3
+Pos: [  12500.8,    -250.3,      10.5] m
+Vel: [     2.1,      -0.5,     -25.3] m/s
+Gimbal: [    2.5,     -0.8] deg  Thrust: 95.7%  ← Energy-optimal throttle
+Ailerons: τ=       0 N⋅m  Grid Fins:   0.0%    ← Ailerons inactive (LQR gimbal)
+```
+
+**Interpretation Notes**:
+- **Gimbal = [0,0]** in Phase 2: Engine is off, no gimbal authority
+- **Thrust = 0%** in Phase 2: Ballistic descent (coasting)
+- **Ailerons active** only in Phase 2: Grid fins provide attitude control
+- **Grid Fins = 100%**: Fully deployed (maximum aerodynamic authority)
+- **Ailerons: τ** scales with dynamic pressure: higher at high velocity/low altitude
+
 ### Animation Loop
 
 **Function: `animate(history, total_time, dt)`**

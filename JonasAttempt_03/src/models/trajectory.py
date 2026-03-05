@@ -7,9 +7,13 @@ def generate_parabolic_trajectory():
     t = np.arange(0.0, config.TRAJ_T_FINAL + config.SIM_DT, config.SIM_DT)
     gamma = np.linspace(0.0, 0.5 * np.pi, len(t))
 
-    x = config.TRAJ_X_REF * (1.0 - np.cos(gamma))
-    y = np.zeros_like(x)
+    x_base = config.TRAJ_X_REF * (1.0 - np.cos(gamma))
+    y_base = np.zeros_like(x_base)
     z = config.TRAJ_Z_REF * np.sin(gamma)
+
+    # Keep the original half-circle in X-Z, add 45° direction in XY by setting y = x
+    x = x_base
+    y = x_base
 
     pos = np.stack([x, y, z], axis=1)
 
