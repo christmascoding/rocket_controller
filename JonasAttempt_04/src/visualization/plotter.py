@@ -51,7 +51,7 @@ _LEG_OPEN_ANGLE = np.radians(135)   # deployed : 135° outward from body
 
 
 def _draw_legs(ax, engine_pt, body_z, body_x, body_y, R, alt, phase,
-               *, local=True, pos=None):
+               *, local=True, pos=None, leg_color='lightgray'):
     """Draw 4 landing legs on *ax*.
 
     *engine_pt* is the 3-D base point in the view's coordinate system.
@@ -86,6 +86,10 @@ def _draw_legs(ax, engine_pt, body_z, body_x, body_y, R, alt, phase,
                 [engine_pt[1], tip[1]],
                 [engine_pt[2], tip[2]],
                 color=color, lw=1.8, solid_capstyle='round')
+        ax.plot([engine_pt[0], tip[0]],
+                [engine_pt[1], tip[1]],
+                [engine_pt[2], tip[2]],
+                color=leg_color, lw=1.8, solid_capstyle='round')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -119,43 +123,43 @@ class Plotter:
     def show(self):
         """Build the figure and enter the Matplotlib event loop."""
         self.fig = plt.figure(figsize=(18, 9))
-        self.fig.patch.set_facecolor('#1a1a2e')
+        self.fig.patch.set_facecolor('white')
         self.fig.subplots_adjust(left=0.03, right=0.97, bottom=0.17,
                                  top=0.95, wspace=0.10)
 
         # --- two 3-D axes ---
         self.ax_local  = self.fig.add_subplot(121, projection='3d',
-                                              facecolor='#16213e')
+                                              facecolor='white')
         self.ax_global = self.fig.add_subplot(122, projection='3d',
-                                              facecolor='#16213e')
+                                              facecolor='white')
         for ax in (self.ax_local, self.ax_global):
-            ax.tick_params(colors='#aaa')
-            ax.xaxis.label.set_color('#ccc')
-            ax.yaxis.label.set_color('#ccc')
-            ax.zaxis.label.set_color('#ccc')
+            ax.tick_params(colors='black')
+            ax.xaxis.label.set_color('black')
+            ax.yaxis.label.set_color('black')
+            ax.zaxis.label.set_color('black')
 
         # --- slider ---
         ax_slider = self.fig.add_axes([0.12, 0.06, 0.55, 0.03],
-                                       facecolor='#0f3460')
+                                       facecolor='#f0f0f0')
         self.slider = Slider(ax_slider, 'Time', 0, self.N - 1,
                              valinit=0, valstep=1, color='#e94560')
         self.slider.on_changed(self._on_slider)
 
         # --- play / pause ---
         ax_btn = self.fig.add_axes([0.72, 0.05, 0.06, 0.04])
-        self.btn = Button(ax_btn, '▶ Play', color='#0f3460',
+        self.btn = Button(ax_btn, '▶ Play', color='#f0f0f0',
                           hovercolor='#e94560')
-        self.btn.label.set_color('white')
+        self.btn.label.set_color('black')
         self.btn.on_clicked(self._toggle_play)
 
         # --- speed selector ---
         ax_radio = self.fig.add_axes([0.82, 0.02, 0.08, 0.10],
-                                      facecolor='#0f3460')
+                                      facecolor='#f0f0f0')
         self.radio = RadioButtons(ax_radio,
                                   ('1×', '2×', '4×', '8×', '16×', '32×'),
                                   activecolor='#e94560')
         for lbl in self.radio.labels:
-            lbl.set_color('white')
+            lbl.set_color('black')
             lbl.set_fontsize(8)
         self.radio.on_clicked(self._on_speed)
 
@@ -205,64 +209,58 @@ class Plotter:
         # --- LEFT: local / body-frame view --------------------------------
         ax = self.ax_local
         ax.cla()
-        ax.set_facecolor('#16213e')
-        ax.set_title('Local View (CG-fixed)', color='white', fontsize=11)
+        ax.set_facecolor('white')
+        ax.set_title('Local View (CG-fixed)', color='black', fontsize=11)
 
         L = 8  # visual scale
         # rocket body (line from engine to nose)
         nose = body_z * 3.0
         tail = -body_z * 3.0
-        ax.plot(*zip(tail, nose), color='white', lw=3, solid_capstyle='round')
+        ax.plot(*zip(tail, nose), color='#3a3a3a', lw=3, solid_capstyle='round')
 
         # landing legs (local view)
         _draw_legs(ax, tail, body_z, body_x, body_y,
-                   R, pos[2], phase, local=True)
+                   R, pos[2], phase, local=True, leg_color='lightgray')
 
-        # body-frame axes
-        _arrow3d(ax, [0,0,0], body_x * L * 0.4, '#ff6b6b', 1, 'x_B')
-        _arrow3d(ax, [0,0,0], body_y * L * 0.4, '#51cf66', 1, 'y_B')
-        _arrow3d(ax, [0,0,0], body_z * L * 0.4, '#339af0', 1, 'z_B (nose)')
-
-        # thrust plume
+        # body-frame axes with proper labels for legend
+        ax.quiver(*[0,0,0], *(body_x * L * 0.4), color='#ff6b6b', linewidth=1,
+                  arrow_length_ratio=0.12, label='Roll axis (X)')
+        ax.quiver(*[0,0,0], *(body_y * L * 0.4), color='#51cf66', linewidth=1,
+                  arrow_length_ratio=0.12, label='Pitch axis (Y)')
+        ax.quiver(*[0,0,0], *(body_z * L * 0.4), color='#339af0', linewidth=1,
+                  arrow_length_ratio=0.12, label='Nose direction (Z)')
+        
+        # thrust and velocity arrows with labels
         if throttle > 0.01:
-            plume_dir = -body_z  # exhaust opposite to nose
-            # add gimbal deflection visually
+            plume_dir = -body_z
             plume_dir_body = np.array([-np.sin(gy), np.sin(gz),
                                        -np.cos(gy)*np.cos(gz)])
             plume_dir = R @ plume_dir_body
-            # Length: 10% (min) to 100% (max) of L*0.8
             plume_len = (0.1 + 0.9 * throttle) * L * 0.8
-            # Color: white → yellow → orange → dark red
-            # Define color stops
-            colors = [
-                (1.0, 1.0, 1.0),      # white
-                (1.0, 1.0, 0.0),      # yellow
-                (1.0, 0.5, 0.0),      # orange
-                (0.7, 0.0, 0.0)       # dark red
-            ]
-            # Interpolate color
+            colors = [(1.0, 1.0, 1.0), (1.0, 1.0, 0.0), (1.0, 0.5, 0.0), (0.7, 0.0, 0.0)]
             t = np.clip(throttle, 0.0, 1.0)
             if t < 0.33:
-                # white to yellow
                 frac = t / 0.33
                 c0, c1 = colors[0], colors[1]
             elif t < 0.66:
-                # yellow to orange
-                frac = (t - 0.33) / (0.33)
+                frac = (t - 0.33) / 0.33
                 c0, c1 = colors[1], colors[2]
             else:
-                # orange to dark red
-                frac = (t - 0.66) / (0.34)
+                frac = (t - 0.66) / 0.34
                 c0, c1 = colors[2], colors[3]
             plume_color = tuple(np.array(c0) * (1 - frac) + np.array(c1) * frac)
-            _arrow3d(ax, tail, plume_dir * plume_len,
-                     plume_color, 2.5, f'Thrust {throttle*100:.0f}%')
-
-        # velocity arrow
+            ax.quiver(*tail, *(plume_dir * plume_len), color=plume_color, linewidth=2.5,
+                     arrow_length_ratio=0.12, label='Thrust')
+        
         if v_mag > 10:
             v_dir = vel / v_mag
-            _arrow3d(ax, [0,0,0], v_dir * L * 0.6, '#ffd43b', 1.5,
-                     f'v={v_mag:.0f} m/s')
+            ax.quiver(*[0,0,0], *(v_dir * L * 0.6), color='#ffd43b', linewidth=1.5,
+                     arrow_length_ratio=0.12, label='Velocity')
+        
+        # Add legend for arrows - top right
+        ax.legend(loc='upper right', fontsize=8)
+
+        # (thrust and velocity arrows now drawn with legend above)
 
         ax.set_xlim(-L, L); ax.set_ylim(-L, L); ax.set_zlim(-L, L)
         ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
@@ -284,21 +282,21 @@ class Plotter:
             f"Aileron: [{ail[0]:.0f}, {ail[1]:.0f}, {ail[2]:.0f}] N·m"
         )
         ax.text2D(0.02, 0.98, telem, transform=ax.transAxes,
-                  fontsize=7, color='#ddd', family='monospace',
+                  fontsize=7, color='black', family='monospace',
                   verticalalignment='top',
-                  bbox=dict(facecolor='#0f3460', alpha=0.85, pad=4))
+                  bbox=dict(facecolor='white', alpha=0.9, pad=4))
 
         # --- RIGHT: global / world-frame view -----------------------------
         ax2 = self.ax_global
         ax2.cla()
-        ax2.set_facecolor('#16213e')
+        ax2.set_facecolor('white')
 
         is_landing_cam = (phase == '3')
 
         if is_landing_cam:
             ax2.set_title('Landing Cam (±50 m)', color='#e94560', fontsize=11)
         else:
-            ax2.set_title('Global Trajectory', color='white', fontsize=11)
+            ax2.set_title('Global Trajectory', color='black', fontsize=11)
 
         # reference trajectory
         if self.ref is not None and not is_landing_cam:
@@ -322,7 +320,7 @@ class Plotter:
         # rocket at current position
         nose_w = pos + body_z * 3.0
         tail_w = pos - body_z * 3.0
-        ax2.plot(*zip(tail_w, nose_w), color='white', lw=2.5)
+        ax2.plot(*zip(tail_w, nose_w), color='#3a3a3a', lw=2.5)
 
         # landing legs (global view)
         _draw_legs(ax2, tail_w, body_z, body_x, body_y,
@@ -391,9 +389,9 @@ class Plotter:
             f"|F_aero|: {np.linalg.norm(fa_w)/1000:.2f} kN\n"
         )
         ax2.text2D(0.02, 0.98, telem2, transform=ax2.transAxes,
-                   fontsize=7, color='#ddd', family='monospace',
+                   fontsize=7, color='black', family='monospace',
                    verticalalignment='top',
-                   bbox=dict(facecolor='#0f3460', alpha=0.85, pad=4))
+                   bbox=dict(facecolor='white', alpha=0.9, pad=4))
 
         # phase coloured marker in title area
         pcolor = phase_colors.get(phase, 'white')
@@ -454,8 +452,8 @@ def plot_telemetry(data: dict):
     phases = data['phase']
 
     fig, axes = plt.subplots(4, 2, figsize=(16, 12), sharex=True)
-    fig.patch.set_facecolor('#1a1a2e')
-    fig.suptitle('TTHopper Telemetry', color='white', fontsize=14)
+    fig.patch.set_facecolor('white')
+    fig.suptitle('TTHopper Telemetry', color='black', fontsize=14)
 
     phase_colours = {
         '1a': '#339af0', '1b': '#51cf66', '1c': '#ffd43b',
@@ -474,16 +472,16 @@ def plot_telemetry(data: dict):
             i = j
 
     def style(ax, ylabel):
-        ax.set_facecolor('#16213e')
-        ax.tick_params(colors='#aaa')
-        ax.set_ylabel(ylabel, color='#ccc', fontsize=9)
-        ax.grid(True, alpha=0.15)
+        ax.set_facecolor('white')
+        ax.tick_params(colors='black')
+        ax.set_ylabel(ylabel, color='black', fontsize=9)
+        ax.grid(True, alpha=0.2, color='#ccc')
         shade_phases(ax)
 
     # 1 — altitude + Vz
     ax = axes[0, 0]
     ax.plot(t, s['z'], color='#339af0', lw=0.8, label='Alt (m)')
-    ax.legend(fontsize=7, loc='upper left')
+    ax.legend(fontsize=7, loc='upper left', facecolor='white', edgecolor='black')
     style(ax, 'Altitude [m]')
     ax2 = ax.twinx()
     ax2.plot(t, s['vz'], color='#e94560', lw=0.6, alpha=0.7, label='Vz')
@@ -494,7 +492,7 @@ def plot_telemetry(data: dict):
     ax = axes[0, 1]
     ax.plot(t, s['vx'], color='#339af0', lw=0.7, label='Vx')
     ax.plot(t, s['vy'], color='#51cf66', lw=0.7, label='Vy')
-    ax.legend(fontsize=7); style(ax, 'Vel [m/s]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'Vel [m/s]')
 
     # 3 — throttle
     ax = axes[1, 0]
@@ -506,21 +504,21 @@ def plot_telemetry(data: dict):
     ax = axes[1, 1]
     ax.plot(t, np.degrees(c['gimbal_y']), color='#ff6b6b', lw=0.7, label='gy')
     ax.plot(t, np.degrees(c['gimbal_z']), color='#339af0', lw=0.7, label='gz')
-    ax.legend(fontsize=7); style(ax, 'Gimbal [°]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'Gimbal [°]')
 
     # 5 — euler angles
     ax = axes[2, 0]
     ax.plot(t, np.degrees(s['phi']),   color='#ff6b6b', lw=0.7, label='φ')
     ax.plot(t, np.degrees(s['theta']), color='#51cf66', lw=0.7, label='θ')
     ax.plot(t, np.degrees(s['psi']),   color='#339af0', lw=0.7, label='ψ')
-    ax.legend(fontsize=7); style(ax, 'Euler [°]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'Euler [°]')
 
     # 6 — angular rates
     ax = axes[2, 1]
     ax.plot(t, s['p'], color='#ff6b6b', lw=0.7, label='p')
     ax.plot(t, s['q'], color='#51cf66', lw=0.7, label='q')
     ax.plot(t, s['r'], color='#339af0', lw=0.7, label='r')
-    ax.legend(fontsize=7); style(ax, 'ω [rad/s]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'ω [rad/s]')
 
     # 7 — forces (thrust + aero magnitude)
     ax = axes[3, 0]
@@ -530,16 +528,16 @@ def plot_telemetry(data: dict):
                  + np.array(f['Faz'])**2) / 1000
     ax.plot(t, ft, color='#ffd43b', lw=0.7, label='|F_thrust| kN')
     ax.plot(t, fa, color='#ff922b', lw=0.7, label='|F_aero| kN')
-    ax.legend(fontsize=7); style(ax, 'Force [kN]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'Force [kN]')
 
     # 8 — position XY
     ax = axes[3, 1]
     ax.plot(t, np.array(s['x'])/1000, color='#339af0', lw=0.7, label='X km')
     ax.plot(t, np.array(s['y'])/1000, color='#51cf66', lw=0.7, label='Y km')
-    ax.legend(fontsize=7); style(ax, 'Position [km]')
+    ax.legend(fontsize=7, facecolor='white', edgecolor='black'); style(ax, 'Position [km]')
 
-    axes[3, 0].set_xlabel('Time [s]', color='#ccc')
-    axes[3, 1].set_xlabel('Time [s]', color='#ccc')
+    axes[3, 0].set_xlabel('Time [s]', color='black')
+    axes[3, 1].set_xlabel('Time [s]', color='black')
 
     plt.tight_layout()
     plt.show()

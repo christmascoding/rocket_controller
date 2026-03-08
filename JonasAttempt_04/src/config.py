@@ -113,18 +113,19 @@ PID_KD_ATT  = 0.25                            # angular-rate damping
 # Plant gain: G_roll = 1/I_ZZ ≈ 0.00163.  Target ωn_roll ≈ 3 rad/s.
 #   KP_roll = ωn² · I_ZZ ≈ 5500,  KD_roll = 2·ζ·ωn · I_ZZ ≈ 3300.
 ROLL_KP     = 5500.0                           # N·m per rad
-ROLL_KD     = 3300.0                           # N·m·s per rad
+ROLL_KD     = 3300.0                           # N·m·s per rad TODO spielen
 
 # --- Phase 1c : MPC flip --------------------------------------------------
 MPC_HORIZON   = 20          # steps
 MPC_DT        = 0.1         # s per prediction step
+# TODO spielen
 MPC_W_ANGLE   = 100.0       # terminal angle cost
 MPC_W_RATE    = 20.0        # terminal rate cost
 MPC_W_CONTROL = 1.0         # running control cost
 
 # --- Phase 2 : sliding-mode / gain-scheduled ------------------------------
-SMC_LAMBDA  = 2.0           # sliding surface slope
-SMC_K       = 5.0           # switching gain
+SMC_LAMBDA  = 2.0           # sliding surface slope TODO spielen
+SMC_K       = 5.0           # switching gain TODO spielen
 SMC_PHI     = 0.1           # boundary-layer width (chattering suppression)
 
 # --- Phase 3 : LQR landing ------------------------------------------------

@@ -20,7 +20,8 @@ from src.math_utils import (
     quat_to_dcm, safe_normalize,
 )
 
-
+# 3d pid mit quaterions und dem regelfehler für ascent
+# TODO der hat abweichungen vom kurs
 class AscentPID(BaseController):
     """
     Phase 1a : full thrust, cascade PD tracks reference trajectory.
@@ -41,21 +42,21 @@ class AscentPID(BaseController):
         else:  # '1b'
             return self._coast(t, pos, vel, quat, omega, info, debug)
 
-    # ─────────── Phase 1a : powered ascent ─────────────────────────────────
+    # phase 1a
 
     def _powered_ascent(self, t, pos, vel, quat, omega, info, debug):
         ref_pos = info.get('ref_pos', pos)
         ref_vel = info.get('ref_vel', vel)
 
-        # --- outer loop: position → desired force ---
+        # outer loop: position -> desired force
         pos_err  = ref_pos - pos
         vel_des  = ref_vel + PID_KP_POS * pos_err
-        vel_err  = vel_des - vel
-        accel_des = PID_KD_VEL * vel_err
+        vel_err  = vel_des - vel 
+        accel_des = PID_KD_VEL * vel_err # where should force point?
         # gravity compensation
-        force_des = MASS * (accel_des + np.array([0.0, 0.0, G]))
+        force_des = MASS * (accel_des + np.array([0.0, 0.0, G]))  # thats my G
 
-        # --- middle loop: force → attitude + throttle ---
+        # middle loop: force -> attitude + throttle
         force_mag = np.linalg.norm(force_des)
         throttle  = np.clip(force_mag / F_MAX, 0.05, 1.0)
 
@@ -66,19 +67,19 @@ class AscentPID(BaseController):
 
         desired_quat = align_body_z_to(desired_dir)
 
-        # --- inner loop: attitude → gimbal ---
-        # Sign convention: gimbal → moment has a geometric sign inversion
+        # inner loop: attitude -> gimbal
+
+        # Sign convention: gimbal -> moment has a geometric sign inversion
         #   M_y = −L·T·sin(gy),  M_x = +L·T·(−sin(gz))
-        # so POSITIVE gimbal_y creates NEGATIVE M_y.  To correct a
-        # positive attitude error (actual ahead of desired), we need
-        # negative α  →  positive gimbal  →  +KP·e  (not −KP·e!).
+        # so POSITIVE gimbal_y creates NEGATIVE M_y.  To correct a positive attitude error (actual ahead of desired), we need negative alpha, sooo positive gimbal ->  + KP·e  (not −KP·e!) 
+
         att_err = quat_error_vec(desired_quat, quat)   # body frame
         gimbal_y = float(np.clip(PID_KP_ATT * att_err[1] + PID_KD_ATT * omega[1],
                                  -GIMBAL_MAX, GIMBAL_MAX))
         gimbal_z = float(np.clip(PID_KP_ATT * att_err[0] + PID_KD_ATT * omega[0],
                                  -GIMBAL_MAX, GIMBAL_MAX))
-        # Roll damping via ailerons (direct torque — no geometric inversion,
-        # so the standard negative-feedback sign −KP·e is correct here)
+        # roll damping via ailerons (direct torque — no geometric inversion,
+        # standard negative-feedback sign −KP·e is correct here, but not for gimbal
         ail_z = float(np.clip(-ROLL_KP * att_err[2] - ROLL_KD * omega[2],
                               -AILERON_MAX_TORQUE, AILERON_MAX_TORQUE))
 
@@ -90,10 +91,10 @@ class AscentPID(BaseController):
         debug['force_des']    = force_des
         return control, debug
 
-    # ─────────── Phase 1b : unpowered coast ───────────────────────────────
+    # phase 1b
 
     def _coast(self, t, pos, vel, quat, omega, info, debug):
-        # Maintain prograde orientation (align body-z with velocity)
+        # maintain prograde orientation (align body-z with velocity)
         v_mag = np.linalg.norm(vel)
         if v_mag > 5.0:
             desired_dir = vel / v_mag
@@ -103,8 +104,8 @@ class AscentPID(BaseController):
         desired_quat = align_body_z_to(desired_dir)
         att_err = quat_error_vec(desired_quat, quat)
 
-        # Ailerons only (no thrust, direct torque — standard sign)
-        # Use same roll-axis gains for consistency
+        # ailerons only
+        # re-use roll axis gains lol TODO HACKY
         ail_x = float(np.clip(-ROLL_KP * att_err[0] - ROLL_KD * omega[0],
                               -AILERON_MAX_TORQUE, AILERON_MAX_TORQUE))
         ail_y = float(np.clip(-ROLL_KP * att_err[1] - ROLL_KD * omega[1],

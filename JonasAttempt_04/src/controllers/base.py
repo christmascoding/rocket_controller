@@ -4,7 +4,8 @@ Abstract base for all flight-phase controllers.
 from abc import ABC, abstractmethod
 import numpy as np
 
-
+# wir haben jetzet einfach für die controller eine base klasse und das passt dann müssen wir nicht schon wieder wie beim letzten mal alles von vorne aufbauen
+# wow you discovered object oriented programming!!! <3
 class BaseController(ABC):
     """Every phase controller exposes a single :meth:`compute` method.
 
